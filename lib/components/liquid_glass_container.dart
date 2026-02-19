@@ -23,6 +23,7 @@ class LiquidGlassContainer extends StatefulWidget {
     super.key,
     required this.child,
     required this.config,
+    this.forceDarkMode = false,
   });
 
   /// The child widget to apply the glass effect to.
@@ -30,6 +31,9 @@ class LiquidGlassContainer extends StatefulWidget {
 
   /// The glass effect configuration.
   final LiquidGlassConfig config;
+
+  /// Forces native glass rendering to dark mode when true.
+  final bool forceDarkMode;
 
   @override
   State<LiquidGlassContainer> createState() => _LiquidGlassContainerState();
@@ -39,7 +43,7 @@ class _LiquidGlassContainerState extends State<LiquidGlassContainer> {
   MethodChannel? _channel;
   bool? _lastIsDark;
 
-  bool get _isDark => ThemeHelper.isDark(context);
+  bool get _isDark => ThemeHelper.isDark(context, forceDarkMode: widget.forceDarkMode);
 
   @override
   void didChangeDependencies() {
@@ -67,6 +71,11 @@ class _LiquidGlassContainerState extends State<LiquidGlassContainer> {
       return widget.child;
     }
 
+    if (_channel != null && _lastIsDark != _isDark) {
+      _lastIsDark = _isDark;
+      unawaited(_updateConfig());
+    }
+
     // For iOS 26+ and macOS 26+, use native LiquidGlassContainer
     return _buildNativeContainer(context);
   }
@@ -83,7 +92,7 @@ class _LiquidGlassContainerState extends State<LiquidGlassContainer> {
       if (widget.config.tint != null)
         'tint': resolveColorToArgb(widget.config.tint!, context),
       'interactive': widget.config.interactive,
-      'isDark': ThemeHelper.isDark(context),
+      'isDark': ThemeHelper.isDark(context, forceDarkMode: widget.forceDarkMode),
     };
 
     final platformView = defaultTargetPlatform == TargetPlatform.iOS
@@ -127,6 +136,14 @@ class _LiquidGlassContainerState extends State<LiquidGlassContainer> {
     _lastIsDark = _isDark;
     unawaited(_updateConfig());
     Future<void>.delayed(const Duration(milliseconds: 16), () async {
+      if (!mounted || _channel == null) return;
+      await _updateConfig();
+    });
+    Future<void>.delayed(const Duration(milliseconds: 120), () async {
+      if (!mounted || _channel == null) return;
+      await _updateConfig();
+    });
+    Future<void>.delayed(const Duration(milliseconds: 280), () async {
       if (!mounted || _channel == null) return;
       await _updateConfig();
     });

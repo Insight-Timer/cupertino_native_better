@@ -13,7 +13,11 @@ class ThemeHelper {
   /// 1. CupertinoTheme (if CupertinoApp is present)
   /// 2. Material Theme (if MaterialApp is present)
   /// 3. System brightness (fallback)
-  static Brightness getBrightness(BuildContext context) {
+  static Brightness getBrightness(BuildContext context, {bool forceDarkMode = false}) {
+    if (forceDarkMode) {
+      return Brightness.dark;
+    }
+
     try {
       final cupertinoTheme = CupertinoTheme.of(context);
       final brightness = cupertinoTheme.brightness;
@@ -53,7 +57,7 @@ class ThemeHelper {
   }
 
   /// Checks if the current theme is dark mode.
-  static bool isDark(BuildContext context) {
-    return getBrightness(context) == Brightness.dark;
+  static bool isDark(BuildContext context, {bool forceDarkMode = false}) {
+    return getBrightness(context, forceDarkMode: forceDarkMode) == Brightness.dark;
   }
 }
