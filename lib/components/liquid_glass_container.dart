@@ -139,14 +139,6 @@ class _LiquidGlassContainerState extends State<LiquidGlassContainer> {
       if (!mounted || _channel == null) return;
       await _updateConfig();
     });
-    Future<void>.delayed(const Duration(milliseconds: 120), () async {
-      if (!mounted || _channel == null) return;
-      await _updateConfig();
-    });
-    Future<void>.delayed(const Duration(milliseconds: 280), () async {
-      if (!mounted || _channel == null) return;
-      await _updateConfig();
-    });
   }
 
   Future<void> _updateConfig() async {
