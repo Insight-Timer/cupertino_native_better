@@ -7,6 +7,9 @@ enum CNGlassEffect {
   /// Regular glass effect with standard blur and transparency.
   regular,
 
+  /// Clear glass effect with higher transparency, similar to the iOS Photos app.
+  clear,
+
   /// Prominent glass effect with enhanced visual prominence.
   prominent,
 }
