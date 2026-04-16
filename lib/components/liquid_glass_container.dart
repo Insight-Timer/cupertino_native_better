@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -37,7 +39,7 @@ class _LiquidGlassContainerState extends State<LiquidGlassContainer> {
   MethodChannel? _channel;
   bool? _lastIsDark;
 
-  bool get _isDark => ThemeHelper.isDark(context);
+  bool get _isDark => ThemeHelper.isDark(context, appearance: widget.config.appearance);
 
   @override
   void didChangeDependencies() {
@@ -65,6 +67,11 @@ class _LiquidGlassContainerState extends State<LiquidGlassContainer> {
       return widget.child;
     }
 
+    if (_channel != null && _lastIsDark != _isDark) {
+      _lastIsDark = _isDark;
+      unawaited(_updateConfig());
+    }
+
     // For iOS 26+ and macOS 26+, use native LiquidGlassContainer
     return _buildNativeContainer(context);
   }
@@ -81,7 +88,7 @@ class _LiquidGlassContainerState extends State<LiquidGlassContainer> {
       if (widget.config.tint != null)
         'tint': resolveColorToArgb(widget.config.tint!, context),
       'interactive': widget.config.interactive,
-      'isDark': ThemeHelper.isDark(context),
+      'isDark': _isDark,
     };
 
     final platformView = defaultTargetPlatform == TargetPlatform.iOS
@@ -123,6 +130,11 @@ class _LiquidGlassContainerState extends State<LiquidGlassContainer> {
       return null;
     });
     _lastIsDark = _isDark;
+    unawaited(_updateConfig());
+    Future<void>.delayed(const Duration(milliseconds: 16), () async {
+      if (!mounted || _channel == null) return;
+      await _updateConfig();
+    });
   }
 
   Future<void> _updateConfig() async {

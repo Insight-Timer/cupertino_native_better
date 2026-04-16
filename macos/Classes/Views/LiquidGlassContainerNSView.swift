@@ -161,17 +161,22 @@ struct LiquidGlassContainerSwiftUI: View {
   }
   
   private func glassEffectForConfig() -> Glass {
-    // Always use .regular for now - prominent glass API may be available in future
-    var glass = Glass.regular
-    
+    var glass: Glass
+    switch effect {
+    case "clear":
+      glass = Glass.clear
+    default:
+      glass = Glass.regular
+    }
+
     if let tintColor = tint {
       glass = glass.tint(Color(tintColor))
     }
-    
+
     if interactive {
       glass = glass.interactive()
     }
-    
+
     return glass
   }
   
