@@ -165,8 +165,6 @@ struct LiquidGlassContainerSwiftUI: View {
     switch effect {
     case "clear":
       glass = Glass.clear
-    case "prominent":
-      glass = Glass.prominent
     default:
       glass = Glass.regular
     }
