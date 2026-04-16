@@ -23,7 +23,6 @@ class LiquidGlassContainer extends StatefulWidget {
     super.key,
     required this.child,
     required this.config,
-    this.forceDarkMode = false,
   });
 
   /// The child widget to apply the glass effect to.
@@ -31,9 +30,6 @@ class LiquidGlassContainer extends StatefulWidget {
 
   /// The glass effect configuration.
   final LiquidGlassConfig config;
-
-  /// Forces native glass rendering to dark mode when true.
-  final bool forceDarkMode;
 
   @override
   State<LiquidGlassContainer> createState() => _LiquidGlassContainerState();
@@ -43,7 +39,7 @@ class _LiquidGlassContainerState extends State<LiquidGlassContainer> {
   MethodChannel? _channel;
   bool? _lastIsDark;
 
-  bool get _isDark => ThemeHelper.isDark(context, forceDarkMode: widget.forceDarkMode);
+  bool get _isDark => ThemeHelper.isDark(context, appearance: widget.config.appearance);
 
   @override
   void didChangeDependencies() {
@@ -92,7 +88,7 @@ class _LiquidGlassContainerState extends State<LiquidGlassContainer> {
       if (widget.config.tint != null)
         'tint': resolveColorToArgb(widget.config.tint!, context),
       'interactive': widget.config.interactive,
-      'isDark': ThemeHelper.isDark(context, forceDarkMode: widget.forceDarkMode),
+      'isDark': _isDark,
     };
 
     final platformView = defaultTargetPlatform == TargetPlatform.iOS

@@ -23,6 +23,18 @@ enum CNGlassEffectShape {
   circle,
 }
 
+/// Appearance override for Liquid Glass effects.
+enum CNGlassAppearance {
+  /// Follow the system appearance (default).
+  system,
+
+  /// Always render as light glass regardless of system appearance.
+  light,
+
+  /// Always render as dark glass regardless of system appearance.
+  dark,
+}
+
 /// Configuration for Liquid Glass effects.
 class LiquidGlassConfig {
   /// The glass effect variant to apply.
@@ -40,6 +52,12 @@ class LiquidGlassConfig {
   /// Whether the glass effect should be interactive (responds to touch/pointer).
   final bool interactive;
 
+  /// Controls the appearance of the glass effect.
+  ///
+  /// Defaults to [CNGlassAppearance.system], which follows the device theme.
+  /// Use [CNGlassAppearance.light] or [CNGlassAppearance.dark] to override.
+  final CNGlassAppearance appearance;
+
   /// Creates a configuration for Liquid Glass effects.
   const LiquidGlassConfig({
     this.effect = CNGlassEffect.regular,
@@ -47,6 +65,7 @@ class LiquidGlassConfig {
     this.cornerRadius,
     this.tint,
     this.interactive = false,
+    this.appearance = CNGlassAppearance.system,
   });
 
   @override
@@ -58,7 +77,8 @@ class LiquidGlassConfig {
           shape == other.shape &&
           cornerRadius == other.cornerRadius &&
           tint == other.tint &&
-          interactive == other.interactive;
+          interactive == other.interactive &&
+          appearance == other.appearance;
 
   @override
   int get hashCode =>
@@ -66,7 +86,8 @@ class LiquidGlassConfig {
       shape.hashCode ^
       (cornerRadius?.hashCode ?? 0) ^
       (tint?.hashCode ?? 0) ^
-      interactive.hashCode;
+      interactive.hashCode ^
+      appearance.hashCode;
 }
 
 /// Extension on Widget to apply Liquid Glass effects.
@@ -107,6 +128,7 @@ extension LiquidGlassExtension on Widget {
     double? cornerRadius,
     Color? tint,
     bool interactive = false,
+    CNGlassAppearance appearance = CNGlassAppearance.system,
   }) {
     // Only apply glass effect on iOS 26+ or macOS 26+
     if (!PlatformVersion.supportsLiquidGlass) {
@@ -120,6 +142,7 @@ extension LiquidGlassExtension on Widget {
         cornerRadius: cornerRadius,
         tint: tint,
         interactive: interactive,
+        appearance: appearance,
       ),
       child: this,
     );
