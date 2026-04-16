@@ -10,6 +10,12 @@ class MockCupertinoNativePlatform
 
   @override
   Future<int?> getMajorOSVersion() => Future.value(26);
+
+  @override
+  Future<void> beginTransition() => Future.value();
+
+  @override
+  Future<void> endTransition() => Future.value();
 }
 
 void main() {
