@@ -1,7 +1,6 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 /// Detects image format from asset path or image data.
@@ -139,62 +138,137 @@ Future<bool> _assetExists(String assetPath) async {
   }
 }
 
-/// Renders an IconData to PNG bytes for use in native platform views.
+/// Renders an [IconData] to PNG bytes for use in native platform views.
 ///
-/// The [size] parameter controls the logical pixel size of the icon.
-/// This function renders the icon at the native size and proper pixel density.
+/// The [size] parameter is the logical font size of the glyph. The output
+/// is always a square `size × size` logical-pixel bitmap with the glyph's
+/// visible bounds centered inside it. This keeps the embedded icon's
+/// effective dimensions consistent regardless of how much line-box
+/// leading the source font reports — so native containers like UITabBar
+/// lay out a predictable distance between icon and label.
+///
+/// The function works in three passes:
+///   1. Paint the glyph onto a generously padded canvas (TextPainter
+///      reports line-box metrics, not glyph metrics — we can't ask the
+///      engine ahead of time how far the glyph overflows).
+///   2. Scan the alpha channel to find the actual non-transparent bounds.
+///   3. Re-blit the cropped glyph into a `size × size` canvas, centered
+///      and scaled down if its visible bounds happen to exceed `size`
+///      (FontAwesome-style overflowing glyphs).
 Future<Uint8List?> iconDataToImageBytes(
   IconData iconData, {
   double size = 25.0,
   Color color = CupertinoColors.black,
 }) async {
   try {
-    final RenderRepaintBoundary repaintBoundary = RenderRepaintBoundary();
-    final PipelineOwner pipelineOwner = PipelineOwner();
-    final BuildOwner buildOwner = BuildOwner(focusManager: FocusManager());
+    final double pixelRatio =
+        ui.PlatformDispatcher.instance.views.first.devicePixelRatio;
 
-    final RenderView renderView = RenderView(
-      view: ui.PlatformDispatcher.instance.views.first,
-      child: RenderPositionedBox(
-        alignment: Alignment.center,
-        child: repaintBoundary,
+    final TextPainter painter = TextPainter(
+      text: TextSpan(
+        text: String.fromCharCode(iconData.codePoint),
+        style: TextStyle(
+          inherit: false,
+          color: color,
+          fontSize: size,
+          fontFamily: iconData.fontFamily,
+          package: iconData.fontPackage,
+        ),
       ),
-      configuration: ViewConfiguration.fromView(
-        ui.PlatformDispatcher.instance.views.first,
-      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+
+    final double padding = size;
+    final double logicalWidth = painter.width + padding * 2;
+    final double logicalHeight = painter.height + padding * 2;
+    final int paddedPixelWidth = (logicalWidth * pixelRatio).ceil();
+    final int paddedPixelHeight = (logicalHeight * pixelRatio).ceil();
+
+    final ui.PictureRecorder recorder = ui.PictureRecorder();
+    final Canvas canvas = Canvas(recorder)..scale(pixelRatio);
+    painter.paint(canvas, Offset(padding, padding));
+    final ui.Image paddedImage = await recorder.endRecording().toImage(
+      paddedPixelWidth,
+      paddedPixelHeight,
     );
 
-    pipelineOwner.rootNode = renderView;
-    renderView.prepareInitialFrame();
-
-    final RenderObjectToWidgetElement<RenderBox> rootElement =
-        RenderObjectToWidgetAdapter<RenderBox>(
-          container: repaintBoundary,
-          child: Directionality(
-            textDirection: TextDirection.ltr,
-            child: Icon(
-              iconData,
-              size: size,
-              color: color, // Will be tinted by native platform
-            ),
-          ),
-        ).attachToRenderTree(buildOwner);
-
-    buildOwner.buildScope(rootElement);
-    buildOwner.finalizeTree();
-
-    pipelineOwner.flushLayout();
-    pipelineOwner.flushCompositingBits();
-    pipelineOwner.flushPaint();
-
-    final ui.Image image = await repaintBoundary.toImage(
-      pixelRatio: ui.PlatformDispatcher.instance.views.first.devicePixelRatio,
+    final ByteData? rgbaData = await paddedImage.toByteData(
+      format: ui.ImageByteFormat.rawStraightRgba,
     );
-    final ByteData? byteData = await image.toByteData(
+    if (rgbaData == null) {
+      paddedImage.dispose();
+      return null;
+    }
+    final Uint8List rgba = rgbaData.buffer.asUint8List();
+
+    int minX = paddedPixelWidth;
+    int minY = paddedPixelHeight;
+    int maxX = -1;
+    int maxY = -1;
+    for (int y = 0; y < paddedPixelHeight; y++) {
+      final int rowOffset = y * paddedPixelWidth * 4;
+      for (int x = 0; x < paddedPixelWidth; x++) {
+        if (rgba[rowOffset + x * 4 + 3] != 0) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    if (maxX < 0) {
+      // Nothing was painted (e.g. unknown glyph for the requested font).
+      paddedImage.dispose();
+      return null;
+    }
+
+    final double glyphPixelWidth = (maxX - minX + 1).toDouble();
+    final double glyphPixelHeight = (maxY - minY + 1).toDouble();
+
+    // Re-blit into a square `size × size` (logical pixels) canvas, with
+    // the visible glyph scaled to FILL the canvas (preserving aspect
+    // ratio). Standard icon fonts like CupertinoIcons / Material Icons
+    // render their glyphs inside the em-box with their own built-in
+    // padding — if we just placed the glyph 1:1, the visible ink would
+    // be smaller than the SF Symbol at the same pointSize and the rows
+    // would look mismatched. Scaling to fill the requested `size`
+    // matches SF Symbol's "pointSize is ink size" convention.
+    final int outputPixelSize = (size * pixelRatio).ceil();
+    final double maxGlyphDim = glyphPixelWidth > glyphPixelHeight
+        ? glyphPixelWidth
+        : glyphPixelHeight;
+    final double fitScale = outputPixelSize / maxGlyphDim;
+    final double drawnWidth = glyphPixelWidth * fitScale;
+    final double drawnHeight = glyphPixelHeight * fitScale;
+    final double dstX = (outputPixelSize - drawnWidth) / 2.0;
+    final double dstY = (outputPixelSize - drawnHeight) / 2.0;
+
+    final ui.PictureRecorder squareRecorder = ui.PictureRecorder();
+    final Canvas squareCanvas = Canvas(squareRecorder);
+    squareCanvas.drawImageRect(
+      paddedImage,
+      Rect.fromLTWH(
+        minX.toDouble(),
+        minY.toDouble(),
+        glyphPixelWidth,
+        glyphPixelHeight,
+      ),
+      Rect.fromLTWH(dstX, dstY, drawnWidth, drawnHeight),
+      Paint(),
+    );
+    final ui.Image squareImage = await squareRecorder.endRecording().toImage(
+      outputPixelSize,
+      outputPixelSize,
+    );
+    paddedImage.dispose();
+
+    final ByteData? pngData = await squareImage.toByteData(
       format: ui.ImageByteFormat.png,
     );
+    squareImage.dispose();
 
-    return byteData?.buffer.asUint8List();
+    return pngData?.buffer.asUint8List();
   } catch (e) {
     debugPrint('Error rendering icon to image: $e');
     return null;

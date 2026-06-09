@@ -242,6 +242,14 @@ class _CNPopupMenuOverlay extends StatelessWidget {
                   ),
                   const SizedBox(width: 12),
                 ],
+                if (item.checked) ...[
+                  Icon(
+                    CupertinoIcons.checkmark,
+                    size: 16,
+                    color: CupertinoTheme.of(context).primaryColor,
+                  ),
+                  const SizedBox(width: 8),
+                ],
                 Expanded(
                   child: Text(
                     item.label,

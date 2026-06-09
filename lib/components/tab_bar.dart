@@ -6,6 +6,7 @@ import '../channel/params.dart';
 import '../style/sf_symbol.dart';
 import '../style/tab_bar_search_item.dart';
 import '../utils/icon_renderer.dart';
+import '../utils/platform_view_guard.dart';
 import '../utils/version_detector.dart';
 import '../utils/theme_helper.dart';
 import 'icon.dart';
@@ -109,6 +110,10 @@ class CNTabBar extends StatefulWidget {
         12.0, // Apple's recommended spacing for visual separation
     this.searchItem,
     this.searchController,
+    this.labelFontFamily,
+    this.labelFontSize,
+    this.autoHideOnModal = true,
+    this.autoHideOnPageTransition = true,
   }) : assert(items.length >= 2, 'Tab bar must have at least 2 items'),
        assert(
          items.length <= 5,
@@ -130,6 +135,8 @@ class CNTabBar extends StatefulWidget {
   final ValueChanged<int> onTap;
 
   /// Accent/tint color.
+  ///
+  /// Colors the selected item (icon + label).
   final Color? tint;
 
   /// Background color for the bar.
@@ -186,6 +193,80 @@ class CNTabBar extends StatefulWidget {
   /// - Listen to search state changes
   final CNTabBarSearchController? searchController;
 
+  /// Optional custom font family for tab bar item labels.
+  ///
+  /// The font must be registered in the app's `Info.plist` (iOS) or as a Flutter
+  /// font asset. When null, the system default tab bar label font is used.
+  ///
+  /// Example:
+  /// ```dart
+  /// CNTabBar(
+  ///   items: [...],
+  ///   currentIndex: _index,
+  ///   onTap: (i) => setState(() => _index = i),
+  ///   labelFontFamily: 'Roboto',
+  ///   labelFontSize: 11.0,
+  /// )
+  /// ```
+  final String? labelFontFamily;
+
+  /// Optional font size for tab bar item labels.
+  ///
+  /// Used together with [labelFontFamily]. When null, the system default size
+  /// is used (approximately 10pt on iOS).
+  final double? labelFontSize;
+
+  /// Whether the tab bar automatically hides itself while a modal/sheet is
+  /// presented over its route.
+  ///
+  /// On iOS, the underlying `UITabBar` is rendered as a native UIView via
+  /// hybrid composition. When a Flutter-rendered modal sheet (e.g. one
+  /// shown via `showCupertinoSheet`, `showCupertinoModalPopup`, or
+  /// `showModalBottomSheet`) is presented over the route containing this
+  /// tab bar, the platform view's z-order can interfere with the modal —
+  /// specifically, Flutter-rendered widgets inside the modal (notably
+  /// Material `TextField`s) may appear behind the tab bar's native layer
+  /// and become invisible (Issue #31).
+  ///
+  /// When this is `true` (default), `CNTabBar` listens to its
+  /// [ModalRoute.secondaryAnimation] and renders an empty `SizedBox` in
+  /// place of the platform view while a modal/sheet is on top. When the
+  /// modal is dismissed, the platform view is restored. This matches the
+  /// native iOS pattern where `UITabBarController`'s tab bar is naturally
+  /// hidden during full-screen modal presentations.
+  ///
+  /// Set to `false` if you need the tab bar to remain visible behind
+  /// modals (rare, and typically requires a native-only sheet that won't
+  /// hit the z-order issue).
+  final bool autoHideOnModal;
+
+  /// Whether the tab bar's platform view is hidden from Flutter's scene
+  /// while the enclosing route is animating in or out (e.g. during a
+  /// `CupertinoPageRoute` push or pop). Default: `true`.
+  ///
+  /// When a page containing a `UiKitView` is animated by Flutter, the
+  /// `PlatformViewLayer` overlay can occlude Flutter content elsewhere
+  /// on the page — most visibly, parts of header/text widgets become
+  /// briefly invisible mid-transition (Issue #29 follow-up). This is a
+  /// Flutter hybrid-composition limitation and not something the Swift
+  /// side can fix.
+  ///
+  /// When this is `true`, `CNTabBar` listens to its enclosing
+  /// `ModalRoute.secondaryAnimation` and wraps the platform view in an
+  /// `IndexedStack` while the route is animating (`forward` / `reverse`)
+  /// — the platform view stays MOUNTED (so the native `UITabBar` is not
+  /// destroyed, preserving its state for the return) but isn't painted,
+  /// so its `PlatformViewLayer` doesn't enter the scene and trigger the
+  /// occlusion artifact. When the animation settles the IndexedStack
+  /// switches to paint the platform view again — instant, no recreate
+  /// animation (Issue #35 fix).
+  ///
+  /// Set to `false` to skip the IndexedStack wrap entirely. The platform
+  /// view will be painted continuously through transitions; this can
+  /// re-introduce the page-wide occlusion artifact for content above
+  /// the tab bar.
+  final bool autoHideOnPageTransition;
+
   @override
   State<CNTabBar> createState() => _CNTabBarState();
 }
@@ -206,11 +287,29 @@ class _CNTabBarState extends State<CNTabBar> {
   int? _lastRightCount;
   double? _lastSplitSpacing;
   double? _lastIconSize;
+  String? _lastLabelFontFamily;
+  double? _lastLabelFontSize;
 
   // Search state
   bool _isSearchActive = false;
   String _searchText = '';
   FocusNode? _searchFocusNode;
+
+  // Issue #31: auto-hide while a modal/sheet is presented over this route.
+  // We listen to a global modal depth counter maintained by
+  // [CNTabBarRouteObserver] (which the user wires into MaterialApp's
+  // navigatorObservers). When depth > 0, a modal/sheet is on top and we
+  // hide the platform view so its native UIView z-order doesn't conflict
+  // with Flutter-rendered modal content (notably Material TextFields).
+  bool _modalUp = false;
+
+  // Issue #29 follow-up: auto-hide while the enclosing route is animating
+  // in/out. Flutter's PlatformViewLayer overlay occludes Flutter content
+  // elsewhere on the page during the transition window; swapping the
+  // platform view for a SizedBox during forward/reverse status makes the
+  // page Flutter-only for the slide, eliminating the artifact.
+  bool _pageTransitioning = false;
+  Animation<double>? _secondaryRouteAnim;
 
   bool get _isDark => ThemeHelper.isDark(context);
   Color? get _effectiveTint =>
@@ -219,6 +318,14 @@ class _CNTabBarState extends State<CNTabBar> {
   // Whether search mode is enabled
   bool get _hasSearch => widget.searchItem != null;
 
+  // Lifecycle-managed native view preparation.
+  // Async work is kicked off once in initState and guarded by a monotonic
+  // generation token so that stale completions from superseded rebuilds
+  // never feed into the widget tree.
+  Map<String, dynamic>? _creationParams;
+  int _prepGeneration = 0;
+  bool _preparing = false;
+
   @override
   void initState() {
     super.initState();
@@ -226,6 +333,58 @@ class _CNTabBarState extends State<CNTabBar> {
     if (_hasSearch) {
       _searchFocusNode = FocusNode();
     }
+    if (!PlatformViewGuard.isReady) {
+      PlatformViewGuard.ensureScheduled();
+      PlatformViewGuard.readyNotifier.addListener(_onPlatformViewGuardReady);
+    }
+    if (widget.autoHideOnModal) {
+      // Split-search variant (iOS 26+) uses an UNCLIPPED native container
+      // so the floating search orb can render above the bar's top edge.
+      // That lets the bar's drop shadow bleed through popup-type sheets
+      // (showCupertinoModalPopup, showModalBottomSheet, showBottomSheet)
+      // which the narrow Sheet-only `modalDepth` heuristic doesn't catch.
+      // For the search variant, listen to the broader `anyModalDepth`
+      // instead so we hide for any modal-like overlay. Regular tab bar
+      // keeps the narrow heuristic (avoids flash on small popups).
+      final depthListenable = _hasSearch
+          ? CNTabBarRouteObserver.anyModalDepth
+          : CNTabBarRouteObserver.modalDepth;
+      depthListenable.addListener(_onModalDepthChanged);
+      _onModalDepthChanged();
+    }
+    _scheduleNativePreparation();
+  }
+
+  void _onModalDepthChanged() {
+    final depth = _hasSearch
+        ? CNTabBarRouteObserver.anyModalDepth.value
+        : CNTabBarRouteObserver.modalDepth.value;
+    final shouldHide = depth > 0;
+    if (shouldHide != _modalUp && mounted) {
+      setState(() => _modalUp = shouldHide);
+    }
+  }
+
+  void _onSecondaryRouteAnimChanged() {
+    final anim = _secondaryRouteAnim;
+    if (anim == null) return;
+    final isAnimating =
+        anim.status == AnimationStatus.forward ||
+        anim.status == AnimationStatus.reverse;
+    if (isAnimating != _pageTransitioning && mounted) {
+      setState(() => _pageTransitioning = isAnimating);
+    }
+  }
+
+  void _attachSecondaryRouteAnim() {
+    if (!widget.autoHideOnPageTransition) return;
+    final route = ModalRoute.of(context);
+    final newAnim = route?.secondaryAnimation;
+    if (identical(newAnim, _secondaryRouteAnim)) return;
+    _secondaryRouteAnim?.removeListener(_onSecondaryRouteAnimChanged);
+    _secondaryRouteAnim = newAnim;
+    _secondaryRouteAnim?.addListener(_onSecondaryRouteAnimChanged);
+    _onSecondaryRouteAnimChanged();
   }
 
   @override
@@ -240,15 +399,72 @@ class _CNTabBarState extends State<CNTabBar> {
     if (_hasSearch && _searchFocusNode == null) {
       _searchFocusNode = FocusNode();
     }
+    if (oldWidget.autoHideOnPageTransition != widget.autoHideOnPageTransition) {
+      if (widget.autoHideOnPageTransition) {
+        _attachSecondaryRouteAnim();
+      } else {
+        _secondaryRouteAnim?.removeListener(_onSecondaryRouteAnimChanged);
+        _secondaryRouteAnim = null;
+        if (_pageTransitioning) {
+          _pageTransitioning = false;
+        }
+      }
+    }
     _syncPropsToNativeIfNeeded();
   }
 
   @override
   void dispose() {
+    _prepGeneration++;
+    PlatformViewGuard.readyNotifier.removeListener(_onPlatformViewGuardReady);
     widget.searchController?.removeListener(_onSearchControllerChanged);
+    // Remove from both to be safe — removeListener is a no-op if we never
+    // added to one of them (the choice depends on `_hasSearch` at attach
+    // time; searchItem could in theory be added/removed between attach and
+    // dispose).
+    CNTabBarRouteObserver.modalDepth.removeListener(_onModalDepthChanged);
+    CNTabBarRouteObserver.anyModalDepth.removeListener(_onModalDepthChanged);
+    _secondaryRouteAnim?.removeListener(_onSecondaryRouteAnimChanged);
+    _secondaryRouteAnim = null;
     _searchFocusNode?.dispose();
     _channel?.setMethodCallHandler(null);
+    _channel = null;
     super.dispose();
+  }
+
+  void _onPlatformViewGuardReady() {
+    if (!mounted) return;
+    PlatformViewGuard.readyNotifier.removeListener(_onPlatformViewGuardReady);
+    if (_creationParams != null) {
+      setState(() {});
+    }
+  }
+
+  /// Kick off async icon rendering + creation-param assembly exactly once.
+  /// Uses a generation token so that if the widget is disposed or a new
+  /// preparation supersedes this one, the stale result is silently dropped.
+  void _scheduleNativePreparation() {
+    final isIOSOrMacOS =
+        defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.macOS;
+    if (!(isIOSOrMacOS && PlatformVersion.shouldUseNativeGlass)) return;
+    if (_preparing) return;
+
+    _preparing = true;
+    final gen = ++_prepGeneration;
+
+    _prepareCreationParams()
+        .then((params) {
+          if (!mounted || gen != _prepGeneration) return;
+          setState(() {
+            _creationParams = params;
+            _preparing = false;
+          });
+        })
+        .catchError((_) {
+          if (!mounted || gen != _prepGeneration) return;
+          _preparing = false;
+        });
   }
 
   void _onSearchControllerChanged() {
@@ -280,50 +496,72 @@ class _CNTabBarState extends State<CNTabBar> {
 
   @override
   Widget build(BuildContext context) {
-    // Check if we should use native platform view
     final isIOSOrMacOS =
         defaultTargetPlatform == TargetPlatform.iOS ||
         defaultTargetPlatform == TargetPlatform.macOS;
     final shouldUseNative =
         isIOSOrMacOS && PlatformVersion.shouldUseNativeGlass;
 
-    // Fallback to Flutter widgets for non-iOS/macOS or iOS/macOS < 26
     if (!shouldUseNative) {
-      // For both non-iOS/macOS and iOS/macOS < 26, use Flutter-based implementation
       return _buildFlutterFallback(context);
     }
 
-    // Render custom IconData to bytes
-    return FutureBuilder<List<List<Uint8List?>>>(
-      future: _renderCustomIcons(),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          // Show placeholder while rendering
-          return SizedBox(height: widget.height ?? 50, width: double.infinity);
-        }
+    // Guard against creating platform views too early after hot
+    // restart / cold start.  The engine may not have fully purged
+    // previous-isolate view registrations yet.
+    if (!PlatformViewGuard.isReady) {
+      PlatformViewGuard.ensureScheduled();
+      return _buildFlutterFallback(context);
+    }
 
-        final iconBytes = snapshot.data!;
-        final customIconBytes = iconBytes[0];
-        final activeCustomIconBytes = iconBytes[1];
+    if (_creationParams == null) {
+      return _buildFlutterFallback(context);
+    }
 
-        return FutureBuilder<Widget>(
-          future: _buildNativeTabBar(
-            context,
-            customIconBytes: customIconBytes,
-            activeCustomIconBytes: activeCustomIconBytes,
-          ),
-          builder: (context, snapshot) {
-            if (!snapshot.hasData) {
-              return SizedBox(height: widget.height);
-            }
-            // Keep native tab bar visible at all times
-            // Search UI should be handled in app content area, not as tab bar overlay
-            // This matches adaptive_platform_ui behavior
-            return snapshot.data!;
-          },
-        );
-      },
-    );
+    // Issue #31: when a modal/sheet is presented over our route, hide
+    // the native tab bar so its UIView z-order can't conflict with
+    // Flutter-rendered modal content. Modal hide must DESTROY the
+    // platform view (return SizedBox) — otherwise the iOS UITabBar
+    // layer keeps rendering above the modal content (TextField
+    // disappears, bar bleeds during sheet drags).
+    //
+    // Issue #29 follow-up + Issue #35 follow-up: when only the route
+    // itself is animating (no modal), use an `IndexedStack` so the
+    // platform view stays MOUNTED but isn't painted. The PlatformView
+    // layer isn't added to the scene that frame, so Flutter's hybrid-
+    // composition overlay doesn't kick in (no occlusion of Flutter
+    // content elsewhere on the page) — AND the native UITabBar isn't
+    // destroyed, so when the transition completes the bar is just
+    // there with the correct selected index, no recreate animation.
+    final hideForModal = _modalUp && widget.autoHideOnModal;
+    final h = widget.height ?? _intrinsicHeight ?? 50.0;
+
+    // Modal hide must DESTROY the platform view — see comment above.
+    if (hideForModal) {
+      return SizedBox(height: h);
+    }
+
+    final platformView = _buildNativeTabBarPlatformView(_creationParams!);
+
+    // Page-transition hide: ALWAYS wrap in IndexedStack when the feature
+    // is on, so the widget tree shape is identical regardless of
+    // `_pageTransitioning`. Only the painted index changes. This keeps
+    // the platform-view child's Element mounted across the toggle —
+    // critical: if we returned `platformView` directly when the
+    // transition ends, the tree shape would change and the UiKitView
+    // would be destroyed and re-created (visible "animate to index" on
+    // return — Issue #35).
+    if (widget.autoHideOnPageTransition) {
+      return IndexedStack(
+        index: _pageTransitioning ? 0 : 1,
+        sizing: StackFit.passthrough,
+        children: [
+          SizedBox(height: h),
+          platformView,
+        ],
+      );
+    }
+    return platformView;
   }
 
   Future<List<List<Uint8List?>>> _renderCustomIcons() async {
@@ -336,7 +574,14 @@ class _CNTabBarState extends State<CNTabBar> {
         // For imageAsset, we don't need to render to bytes - native code will handle it
         customIconBytes.add(null);
       } else if (item.customIcon != null) {
-        final bytes = await iconDataToImageBytes(item.customIcon!, size: 25.0);
+        // Render at the requested icon size so that bar-level `iconSize`
+        // (and per-item `icon.size` fallback) actually scales custom icons.
+        // Native side embeds these bytes as-is, so the rasterized PNG must
+        // be produced at the target logical size.
+        final bytes = await iconDataToImageBytes(
+          item.customIcon!,
+          size: widget.iconSize ?? item.icon?.size ?? 25.0,
+        );
         customIconBytes.add(bytes);
       } else {
         customIconBytes.add(null);
@@ -349,7 +594,11 @@ class _CNTabBarState extends State<CNTabBar> {
       } else if (item.activeCustomIcon != null) {
         final bytes = await iconDataToImageBytes(
           item.activeCustomIcon!,
-          size: 25.0,
+          size:
+              widget.iconSize ??
+              item.activeIcon?.size ??
+              item.icon?.size ??
+              25.0,
         );
         activeCustomIconBytes.add(bytes);
       } else if (item.customIcon != null) {
@@ -362,12 +611,21 @@ class _CNTabBarState extends State<CNTabBar> {
     return [customIconBytes, activeCustomIconBytes];
   }
 
-  Future<Widget> _buildNativeTabBar(
-    BuildContext context, {
-    required List<Uint8List?> customIconBytes,
-    required List<Uint8List?> activeCustomIconBytes,
-  }) async {
-    // Capture all context-derived values before any async operations
+  /// Prepares all creation params for the native platform view.
+  /// All async work (icon rendering, asset path resolution) happens here,
+  /// guarded by the generation token in the caller. The result is stored
+  /// in [_creationParams] so that [build] can construct the platform view
+  /// synchronously -- eliminating the nested-FutureBuilder race that caused
+  /// duplicate platform-view creation attempts.
+  Future<Map<String, dynamic>> _prepareCreationParams() async {
+    // Render custom icons (the only truly async step for most configs)
+    final iconBytes = await _renderCustomIcons();
+    final customIconBytes = iconBytes[0];
+    final activeCustomIconBytes = iconBytes[1];
+
+    if (!mounted) return const {};
+
+    // Capture all context-derived values
     final capturedDevicePixelRatio = MediaQuery.of(context).devicePixelRatio;
     final capturedIsDark = _isDark;
     final capturedStyle = encodeStyle(context, tint: _effectiveTint);
@@ -375,7 +633,6 @@ class _CNTabBarState extends State<CNTabBar> {
       widget.backgroundColor,
       context,
     );
-    // Capture search style params before async operations
     final capturedSearchStyle = _hasSearch
         ? _buildSearchStyleParams(context)
         : null;
@@ -387,7 +644,6 @@ class _CNTabBarState extends State<CNTabBar> {
         .toList();
     final badges = widget.items.map((e) => e.badge ?? '').toList();
 
-    // Extract imageAsset data and resolve asset paths based on device pixel ratio
     final imageAssetPaths = await Future.wait(
       widget.items.map(
         (e) async => e.imageAsset != null
@@ -403,7 +659,7 @@ class _CNTabBarState extends State<CNTabBar> {
       ),
     );
 
-    if (!mounted) return const SizedBox();
+    if (!mounted) return const {};
 
     final sizes = widget.items
         .map((e) => (widget.iconSize ?? e.icon?.size ?? e.imageAsset?.size))
@@ -421,7 +677,6 @@ class _CNTabBarState extends State<CNTabBar> {
     final activeImageAssetData = widget.items
         .map((e) => e.activeImageAsset?.imageData)
         .toList();
-    // Auto-detect format if not provided (use resolved paths)
     final imageAssetFormats = await Future.wait(
       widget.items.asMap().entries.map((entry) async {
         final e = entry.value;
@@ -443,9 +698,9 @@ class _CNTabBarState extends State<CNTabBar> {
       }),
     );
 
-    if (!mounted) return const SizedBox();
+    if (!mounted) return const {};
 
-    final creationParams = <String, dynamic>{
+    return <String, dynamic>{
       'labels': labels,
       'sfSymbols': symbols,
       'activeSfSymbols': activeSymbols,
@@ -458,14 +713,15 @@ class _CNTabBarState extends State<CNTabBar> {
       'activeImageAssetData': activeImageAssetData,
       'imageAssetFormats': imageAssetFormats,
       'activeImageAssetFormats': activeImageAssetFormats,
-      'iconScale': capturedDevicePixelRatio, // Pass the scale!
+      'iconScale': capturedDevicePixelRatio,
       'sfSymbolSizes': sizes,
       'sfSymbolColors': colors,
       'selectedIndex': widget.currentIndex,
       'isDark': capturedIsDark,
-      'split': _hasSearch
-          ? true
-          : widget.split, // Force split when search is enabled
+      if (widget.labelFontFamily != null)
+        'labelFontFamily': widget.labelFontFamily,
+      if (widget.labelFontSize != null) 'labelFontSize': widget.labelFontSize,
+      'split': _hasSearch ? true : widget.split,
       'rightCount': widget.rightCount,
       'splitSpacing': widget.splitSpacing,
       'style': capturedStyle
@@ -473,7 +729,6 @@ class _CNTabBarState extends State<CNTabBar> {
           if (capturedBackgroundColor != null)
             'backgroundColor': capturedBackgroundColor,
         }),
-      // Search configuration (iOS 26+)
       if (_hasSearch) ...{
         'hasSearch': true,
         'searchPlaceholder': widget.searchItem!.placeholder,
@@ -485,12 +740,9 @@ class _CNTabBarState extends State<CNTabBar> {
             'magnifyingglass',
         'automaticallyActivatesSearch':
             widget.searchItem!.automaticallyActivatesSearch,
-        // Style configuration (captured before async operations)
         if (capturedSearchStyle != null) 'searchStyle': capturedSearchStyle,
       },
     };
-
-    return _buildNativeTabBarPlatformView(creationParams);
   }
 
   Map<String, dynamic> _buildSearchStyleParams(BuildContext context) {
@@ -544,10 +796,8 @@ class _CNTabBarState extends State<CNTabBar> {
     };
   }
 
-  Future<Widget> _buildNativeTabBarPlatformView(
-    Map<String, dynamic> creationParams,
-  ) async {
-    final viewType = 'CupertinoNativeTabBar';
+  Widget _buildNativeTabBarPlatformView(Map<String, dynamic> creationParams) {
+    const viewType = 'CupertinoNativeTabBar';
     final platformView = defaultTargetPlatform == TargetPlatform.iOS
         ? UiKitView(
             viewType: viewType,
@@ -587,21 +837,48 @@ class _CNTabBarState extends State<CNTabBar> {
     _lastSplit = widget.split;
     _lastRightCount = widget.rightCount;
     _lastSplitSpacing = widget.splitSpacing;
+    _lastLabelFontFamily = widget.labelFontFamily;
+    _lastLabelFontSize = widget.labelFontSize;
 
-    // Force refresh for label rendering on iOS < 16
-    // Wait for next frame to ensure view is fully initialized
+    // Force refresh for label rendering (Issue #6: sporadic missing
+    // labels with 5 items). The Swift-side `refresh` cycles
+    // `bar.selectedItem` through every tab to force UITabBar layout,
+    // then restores the original. We need this on iOS 26 too — the
+    // missing-label bug isn't limited to iOS < 16.
+    //
+    // To avoid the visible "tabs activate in sequence on launch" glitch
+    // (Issue #35), the Swift refresh wraps the cycle in
+    // `UIView.setAnimationsEnabled(false)` so the Liquid Glass selection
+    // pill doesn't morph between tabs while we cycle.
+    //
+    // Order matters: setSelectedIndex must run BEFORE refresh on each
+    // pass. Refresh captures `bar.selectedItem` at start and restores
+    // it after cycling — if we ran setSelectedIndex AFTER refresh, that
+    // restore would override our intended index, leaving the bar stuck
+    // at the stale creationParams selectedIndex = 0 (see auto-hide-on-
+    // modal recreation flow).
     if (defaultTargetPlatform == TargetPlatform.iOS) {
       Future.delayed(const Duration(milliseconds: 50), () async {
         if (mounted && _channel != null) {
           try {
-            await _channel?.invokeMethod('refresh');
-            // Ensure correct selection after refresh (refresh can reset selection state)
             await _channel?.invokeMethod('setSelectedIndex', {
               'index': widget.currentIndex,
             });
+            await _channel?.invokeMethod('refresh');
           } catch (e) {
             // Ignore MissingPluginException during hot reload or view recreation
-            // This is expected when the platform view is being recreated
+          }
+        }
+      });
+      Future.delayed(const Duration(milliseconds: 200), () async {
+        if (mounted && _channel != null) {
+          try {
+            await _channel?.invokeMethod('setSelectedIndex', {
+              'index': widget.currentIndex,
+            });
+            await _channel?.invokeMethod('refresh');
+          } catch (e) {
+            // Ignore when platform view is being recreated
           }
         }
       });
@@ -772,6 +1049,19 @@ class _CNTabBarState extends State<CNTabBar> {
         _requestIntrinsicSize();
       }
 
+      // Font updates
+      if (_lastLabelFontFamily != widget.labelFontFamily ||
+          _lastLabelFontSize != widget.labelFontSize) {
+        await ch.invokeMethod('setFont', {
+          if (widget.labelFontFamily != null)
+            'labelFontFamily': widget.labelFontFamily,
+          if (widget.labelFontSize != null)
+            'labelFontSize': widget.labelFontSize,
+        });
+        _lastLabelFontFamily = widget.labelFontFamily;
+        _lastLabelFontSize = widget.labelFontSize;
+      }
+
       // Layout updates (split / insets)
       if (_lastSplit != widget.split ||
           _lastRightCount != widget.rightCount ||
@@ -795,6 +1085,7 @@ class _CNTabBarState extends State<CNTabBar> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _attachSecondaryRouteAnim();
     _syncBrightnessIfNeeded();
     _syncPropsToNativeIfNeeded();
   }
@@ -847,24 +1138,39 @@ class _CNTabBarState extends State<CNTabBar> {
 
     // If no search item, just return regular CupertinoTabBar
     if (!_hasSearch) {
-      return SizedBox(
-        height: widget.height,
-        child: CupertinoTabBar(
-          items: [
-            for (final item in widget.items)
-              BottomNavigationBarItem(
-                icon: _buildTabIcon(item, isActive: false),
-                activeIcon: _buildTabIcon(item, isActive: true),
-                label: item.label,
-              ),
-          ],
-          currentIndex: widget.currentIndex,
-          onTap: widget.onTap,
-          backgroundColor: widget.backgroundColor,
-          inactiveColor: CupertinoColors.inactiveGray,
-          activeColor: tintColor,
-        ),
+      Widget tabBar = CupertinoTabBar(
+        items: [
+          for (final item in widget.items)
+            BottomNavigationBarItem(
+              icon: _buildTabIcon(item, isActive: false),
+              activeIcon: _buildTabIcon(item, isActive: true),
+              label: item.label,
+            ),
+        ],
+        currentIndex: widget.currentIndex,
+        onTap: widget.onTap,
+        backgroundColor: widget.backgroundColor,
+        inactiveColor: CupertinoColors.inactiveGray,
+        activeColor: tintColor,
       );
+
+      // Apply custom font family via CupertinoTheme when specified.
+      // CupertinoTabBar derives its label style from the theme typography.
+      if (widget.labelFontFamily != null) {
+        tabBar = CupertinoTheme(
+          data: CupertinoTheme.of(context).copyWith(
+            textTheme: CupertinoTheme.of(context).textTheme.copyWith(
+              tabLabelTextStyle: TextStyle(
+                fontFamily: widget.labelFontFamily,
+                fontSize: widget.labelFontSize ?? 10.0,
+              ),
+            ),
+          ),
+          child: tabBar,
+        );
+      }
+
+      return SizedBox(height: widget.height, child: tabBar);
     }
 
     // With search: build a custom layout that mimics iOS 26 behavior
@@ -965,43 +1271,50 @@ class _CNTabBarState extends State<CNTabBar> {
         mainAxisSize: MainAxisSize.min,
         children: [
           for (int i = 0; i < widget.items.length; i++)
-            GestureDetector(
-              onTap: () => widget.onTap(i),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: FittedBox(
-                        child: _buildTabIcon(
-                          widget.items[i],
-                          isActive: widget.currentIndex == i,
+            Flexible(
+              child: GestureDetector(
+                onTap: () => widget.onTap(i),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: FittedBox(
+                          child: _buildTabIcon(
+                            widget.items[i],
+                            isActive: widget.currentIndex == i,
+                          ),
                         ),
                       ),
-                    ),
-                    if (widget.items[i].label != null &&
-                        widget.items[i].label!.isNotEmpty) ...[
-                      const SizedBox(width: 4),
-                      Text(
-                        widget.items[i].label!,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: widget.currentIndex == i
-                              ? FontWeight.w600
-                              : FontWeight.normal,
-                          color: widget.currentIndex == i
-                              ? tintColor
-                              : CupertinoColors.inactiveGray,
+                      if (widget.items[i].label != null &&
+                          widget.items[i].label!.isNotEmpty) ...[
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            widget.items[i].label!,
+                            style: TextStyle(
+                              fontFamily: widget.labelFontFamily,
+                              fontSize: widget.labelFontSize ?? 12,
+                              fontWeight: widget.currentIndex == i
+                                  ? FontWeight.w600
+                                  : FontWeight.normal,
+                              color: widget.currentIndex == i
+                                  ? tintColor
+                                  : CupertinoColors.inactiveGray,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                          ),
                         ),
-                      ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -1126,6 +1439,10 @@ class _CNTabBarState extends State<CNTabBar> {
 
   /// Builds an icon widget for the tab bar fallback.
   /// Priority: imageAsset > customIcon > icon (SF Symbol)
+  ///
+  /// Mirrors the native sizing precedence used in [_prepareCreationParams]:
+  /// bar-level [CNTabBar.iconSize] wins, then per-item icon/imageAsset size,
+  /// finally the standard 25pt tab-bar icon size.
   Widget _buildTabIcon(CNTabBarItem item, {required bool isActive}) {
     const defaultSize = 25.0;
 
@@ -1133,38 +1450,203 @@ class _CNTabBarState extends State<CNTabBar> {
     if (isActive && item.activeImageAsset != null) {
       return CNIcon(
         imageAsset: item.activeImageAsset,
-        size: item.activeImageAsset!.size,
+        size: widget.iconSize ?? item.activeImageAsset!.size,
       );
     }
     if (item.imageAsset != null) {
-      return CNIcon(imageAsset: item.imageAsset, size: item.imageAsset!.size);
+      return CNIcon(
+        imageAsset: item.imageAsset,
+        size: widget.iconSize ?? item.imageAsset!.size,
+      );
     }
 
     // Check for custom icon (medium priority)
     if (isActive && item.activeCustomIcon != null) {
-      return Icon(item.activeCustomIcon, size: defaultSize);
+      return Icon(
+        item.activeCustomIcon,
+        size: widget.iconSize ?? item.activeIcon?.size ?? defaultSize,
+      );
     }
     if (item.customIcon != null) {
-      return Icon(item.customIcon, size: defaultSize);
+      return Icon(
+        item.customIcon,
+        size: widget.iconSize ?? item.icon?.size ?? defaultSize,
+      );
     }
 
     // Check for SF Symbol (lowest priority)
     if (isActive && item.activeIcon != null) {
       return CNIcon(
         symbol: item.activeIcon,
-        size: item.activeIcon!.size,
+        size: widget.iconSize ?? item.activeIcon!.size,
         color: item.activeIcon!.color,
       );
     }
     if (item.icon != null) {
       return CNIcon(
         symbol: item.icon,
-        size: item.icon!.size,
+        size: widget.iconSize ?? item.icon!.size,
         color: item.icon!.color,
       );
     }
 
     // Fallback to empty circle if nothing provided
-    return const Icon(CupertinoIcons.circle, size: defaultSize);
+    return Icon(CupertinoIcons.circle, size: widget.iconSize ?? defaultSize);
+  }
+}
+
+/// `NavigatorObserver` that lets [CNTabBar] auto-hide while a modal/sheet
+/// is presented over its route (Issue #31).
+///
+/// **Why it exists**: on iOS, `CNTabBar` is rendered as a native UITabBar
+/// inside a Flutter `UiKitView`. When a Flutter-rendered modal sheet is
+/// presented over the same route (e.g. via `showCupertinoSheet`,
+/// `showCupertinoModalPopup`, or `showModalBottomSheet`), Flutter's hybrid
+/// composition can leave the tab bar's UIView at a higher z-index than
+/// the modal's Flutter content — making Material `TextField`s inside the
+/// modal invisible and letting the tab bar bleed through during sheet
+/// drags. (Cupertino has the same trade-off: `UITabBarController` would
+/// solve it natively, but that requires owning the whole nav stack.)
+///
+/// **What it does**: tracks the depth of modal/popup/sheet/dialog routes
+/// on every navigator it's attached to, exposed via [modalDepth]. When
+/// depth > 0, [CNTabBar] (with the default `autoHideOnModal: true`) swaps
+/// its platform view for an empty `SizedBox` of the same height, mirroring
+/// what iOS does natively when a UIViewController presents a full-screen
+/// modal over a UITabBarController.
+///
+/// **Setup** (one line per app):
+/// ```dart
+/// MaterialApp(
+///   navigatorObservers: [CNTabBarRouteObserver()],
+///   // ...
+/// )
+/// ```
+/// or for `CupertinoApp`:
+/// ```dart
+/// CupertinoApp(
+///   navigatorObservers: [CNTabBarRouteObserver()],
+///   // ...
+/// )
+/// ```
+///
+/// Without this observer registered, [CNTabBar] still renders correctly
+/// — it just won't auto-hide when modals are pushed over it, and you may
+/// hit the Issue #31 z-order glitch with Flutter-rendered modal content.
+class CNTabBarRouteObserver extends NavigatorObserver {
+  /// Global modal-depth notifier shared across all [CNTabBarRouteObserver]
+  /// instances. [CNTabBar] listens to this and hides its platform view
+  /// while depth > 0.
+  static final ValueNotifier<int> _modalDepth = ValueNotifier<int>(0);
+
+  /// Read-only listenable of the current modal/sheet depth.
+  static ValueListenable<int> get modalDepth => _modalDepth;
+
+  /// Broader notifier that also counts popups (action sheets, bottom
+  /// sheets, dialogs) — anything that sits above a route as a ModalRoute/
+  /// PopupRoute. Used by [CNButton] (and other iOS 26 glass widgets) to
+  /// enable halo-containment clipping while any kind of sheet/popup is
+  /// on top, not just full-screen "Sheet" routes.
+  static final ValueNotifier<int> _anyModalDepth = ValueNotifier<int>(0);
+
+  /// Read-only listenable of the current sheet/popup/dialog depth (any
+  /// modal-like route, not just full-screen sheets).
+  static ValueListenable<int> get anyModalDepth => _anyModalDepth;
+
+  /// Manually bump [anyModalDepth] up by one. Pair with
+  /// [markAnyModalInactive] once the modal is dismissed. Useful for
+  /// non-route-based overlays that `NavigatorObserver` cannot see —
+  /// notably `Scaffold.showBottomSheet` (persistent bottom sheets),
+  /// which are anchored to Scaffold state instead of the Navigator.
+  ///
+  /// Example:
+  /// ```dart
+  /// final controller = Scaffold.of(context).showBottomSheet(...);
+  /// CNTabBarRouteObserver.markAnyModalActive();
+  /// controller.closed.whenComplete(CNTabBarRouteObserver.markAnyModalInactive);
+  /// ```
+  static void markAnyModalActive() {
+    _anyModalDepth.value = _anyModalDepth.value + 1;
+  }
+
+  /// Pair with [markAnyModalActive]. Clamps at zero.
+  static void markAnyModalInactive() {
+    final next = _anyModalDepth.value - 1;
+    _anyModalDepth.value = next < 0 ? 0 : next;
+  }
+
+  /// Heuristic for "is this route a full-screen-ish sheet that should
+  /// trigger tab-bar auto-hide?". Intentionally narrow: only matches
+  /// routes whose runtime type name contains `Sheet`. This catches the
+  /// two full-screen-ish sheet routes that benefit from auto-hide:
+  ///   - `CupertinoSheetRoute` (PageRoute, full-screen Cupertino sheet)
+  ///   - `ModalBottomSheetRoute` (PopupRoute, Material bottom sheet)
+  ///
+  /// Routes we intentionally DO NOT match here:
+  ///   - `CupertinoModalPopupRoute` / other action-sheet popups: they
+  ///     cover only a small portion of the screen and dismiss quickly,
+  ///     making the platform-view recreate-and-restore visible as an
+  ///     ugly index-jump animation. The Swift-side `clipsToBounds = true`
+  ///     containment (Issue #2 fix) handles the shadow z-order on its
+  ///     own here, so we don't need to hide.
+  ///   - `DialogRoute` / `RawDialogRoute`: dialogs sit center-screen and
+  ///     do not fully cover the tab bar; their scrim handles dimming.
+  ///   - Regular `PageRoute` pushes (Material/Cupertino page routes):
+  ///     the new page replaces the current view entirely, so the tab
+  ///     bar is offscreen anyway.
+  bool _isModal(Route<dynamic> route) {
+    return route.runtimeType.toString().contains('Sheet');
+  }
+
+  /// Broader predicate: matches any modal-like route that visually covers
+  /// (fully or partially) the underlying page. Used to drive the halo-
+  /// containment counter for non-tab-bar glass widgets.
+  bool _isAnyModal(Route<dynamic> route) {
+    if (route is PopupRoute) return true;
+    final name = route.runtimeType.toString();
+    return name.contains('Sheet') ||
+        name.contains('Popup') ||
+        name.contains('Dialog');
+  }
+
+  void _bumpUp(Route<dynamic> route) {
+    if (_isModal(route)) {
+      _modalDepth.value = _modalDepth.value + 1;
+    }
+    if (_isAnyModal(route)) {
+      _anyModalDepth.value = _anyModalDepth.value + 1;
+    }
+  }
+
+  void _bumpDown(Route<dynamic> route) {
+    if (_isModal(route)) {
+      final next = _modalDepth.value - 1;
+      _modalDepth.value = next < 0 ? 0 : next;
+    }
+    if (_isAnyModal(route)) {
+      final next = _anyModalDepth.value - 1;
+      _anyModalDepth.value = next < 0 ? 0 : next;
+    }
+  }
+
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    _bumpUp(route);
+  }
+
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    _bumpDown(route);
+  }
+
+  @override
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    _bumpDown(route);
+  }
+
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
+    if (oldRoute != null) _bumpDown(oldRoute);
+    if (newRoute != null) _bumpUp(newRoute);
   }
 }
