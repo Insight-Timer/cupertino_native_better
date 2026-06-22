@@ -31,6 +31,10 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
   private var currentIconSizes: [CGFloat] = [] // Track icon sizes for dynamic height calculation
   private var labelFontFamily: String? = nil
   private var labelFontSize: CGFloat = 0 // 0 means system default (~10pt)
+  // FLTR-20361: latest tint, persisted so re-split rebuilds in `setLayout` can re-apply it.
+  // The Dart side only re-sends tint to native when its value changes, so a same-tint
+  // re-split would otherwise leave the rebuilt bars on the system accent.
+  private var currentTint: UIColor? = nil
 
   init(frame: CGRect, viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativeTabBar_\(viewId)", binaryMessenger: messenger)
@@ -89,7 +93,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
       if let v = dict["selectedIndex"] as? NSNumber { selectedIndex = v.intValue }
       if let v = dict["isDark"] as? NSNumber { isDark = v.boolValue }
       if let style = dict["style"] as? [String: Any] {
-        if let n = style["tint"] as? NSNumber { tint = Self.colorFromARGB(n.intValue) }
+        if let n = style["tint"] as? NSNumber { tint = Self.colorFromARGB(n.intValue); self.currentTint = tint }
         if let n = style["backgroundColor"] as? NSNumber { bg = Self.colorFromARGB(n.intValue) }
       }
       if let s = dict["split"] as? NSNumber { split = s.boolValue }
@@ -242,10 +246,9 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
       let adjustedRightWidth = max(rightWidth, minItemWidth * CGFloat(rightCount))
       let adjustedLeftWidth = max(leftWidth, minItemWidth * CGFloat(count - rightCount))
       let adjustedTotal = adjustedLeftWidth + adjustedRightWidth + spacing
-      
+
       // If total exceeds container, fall back to proportional widths
       if adjustedTotal > container.bounds.width {
-        let rightFraction = CGFloat(rightCount) / CGFloat(count)
         let rTop = right.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
         let rBottom = right.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         let lTop = left.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
@@ -256,16 +259,33 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
         rBottom.priority = .defaultHigh
         lTop.priority = .defaultHigh
         lBottom.priority = .defaultHigh
-        NSLayoutConstraint.activate([
-          right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
-          rTop,
-          rBottom,
-          right.widthAnchor.constraint(equalTo: container.widthAnchor, multiplier: rightFraction),
-          left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
-          left.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -spacing),
-          lTop,
-          lBottom,
-        ])
+        if rightCount == 1 {
+          // FLTR-20361: lone pill is on the RIGHT — pin the LEFT group proportionally and let the
+          // right flex, so `splitSpacing` widens the lone right pill (mirrors the lone-left case).
+          let leftFraction = CGFloat(count - rightCount) / CGFloat(count)
+          NSLayoutConstraint.activate([
+            left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
+            lTop,
+            lBottom,
+            left.widthAnchor.constraint(equalTo: container.widthAnchor, multiplier: leftFraction),
+            right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
+            right.leadingAnchor.constraint(equalTo: left.trailingAnchor, constant: spacing),
+            rTop,
+            rBottom,
+          ])
+        } else {
+          let rightFraction = CGFloat(rightCount) / CGFloat(count)
+          NSLayoutConstraint.activate([
+            right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
+            rTop,
+            rBottom,
+            right.widthAnchor.constraint(equalTo: container.widthAnchor, multiplier: rightFraction),
+            left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
+            left.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -spacing),
+            lTop,
+            lBottom,
+          ])
+        }
       } else {
         let rTop = right.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
         let rBottom = right.bottomAnchor.constraint(equalTo: container.bottomAnchor)
@@ -667,6 +687,8 @@ channel.setMethodCallHandler { [weak self] call, result in
             left.shadowImage = UIImage(); right.shadowImage = UIImage()
             left.delegate = self; right.delegate = self
             if let ap = appearance { if #available(iOS 13.0, *) { left.standardAppearance = ap; right.standardAppearance = ap; if #available(iOS 15.0, *) { left.scrollEdgeAppearance = ap; right.scrollEdgeAppearance = ap } } }
+            // FLTR-20361: re-apply the persisted tint — rebuilt bars otherwise default to the system accent.
+            if #available(iOS 10.0, *), let t = self.currentTint { left.tintColor = t; right.tintColor = t }
             left.items = buildItems(0..<leftEnd)
             right.items = buildItems(leftEnd..<count)
             if selectedIndex < leftEnd, let items = left.items { left.selectedItem = items[selectedIndex]; right.selectedItem = nil }
@@ -682,9 +704,8 @@ channel.setMethodCallHandler { [weak self] call, result in
             let adjustedRightWidth = max(rightWidth, minItemWidth * CGFloat(rightCount))
             let adjustedLeftWidth = max(leftWidth, minItemWidth * CGFloat(count - rightCount))
             let adjustedTotal = adjustedLeftWidth + adjustedRightWidth + spacing
-            
+
             if adjustedTotal > self.container.bounds.width {
-              let rightFraction = CGFloat(rightCount) / CGFloat(count)
               let rTop = right.topAnchor.constraint(equalTo: self.container.topAnchor, constant: 14)
               let rBottom = right.bottomAnchor.constraint(equalTo: self.container.bottomAnchor)
               let lTop = left.topAnchor.constraint(equalTo: self.container.topAnchor, constant: 14)
@@ -693,16 +714,33 @@ channel.setMethodCallHandler { [weak self] call, result in
               rBottom.priority = .defaultHigh
               lTop.priority = .defaultHigh
               lBottom.priority = .defaultHigh
-              NSLayoutConstraint.activate([
-                right.trailingAnchor.constraint(equalTo: self.container.trailingAnchor, constant: -rightInset),
-                rTop,
-                rBottom,
-                right.widthAnchor.constraint(equalTo: self.container.widthAnchor, multiplier: rightFraction),
-                left.leadingAnchor.constraint(equalTo: self.container.leadingAnchor, constant: leftInset),
-                left.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -spacing),
-                lTop,
-                lBottom,
-              ])
+              if rightCount == 1 {
+                // FLTR-20361: lone pill is on the RIGHT — pin the LEFT group proportionally and let
+                // the right flex, so `splitSpacing` widens the lone right pill (mirrors lone-left).
+                let leftFraction = CGFloat(count - rightCount) / CGFloat(count)
+                NSLayoutConstraint.activate([
+                  left.leadingAnchor.constraint(equalTo: self.container.leadingAnchor, constant: leftInset),
+                  lTop,
+                  lBottom,
+                  left.widthAnchor.constraint(equalTo: self.container.widthAnchor, multiplier: leftFraction),
+                  right.trailingAnchor.constraint(equalTo: self.container.trailingAnchor, constant: -rightInset),
+                  right.leadingAnchor.constraint(equalTo: left.trailingAnchor, constant: spacing),
+                  rTop,
+                  rBottom,
+                ])
+              } else {
+                let rightFraction = CGFloat(rightCount) / CGFloat(count)
+                NSLayoutConstraint.activate([
+                  right.trailingAnchor.constraint(equalTo: self.container.trailingAnchor, constant: -rightInset),
+                  rTop,
+                  rBottom,
+                  right.widthAnchor.constraint(equalTo: self.container.widthAnchor, multiplier: rightFraction),
+                  left.leadingAnchor.constraint(equalTo: self.container.leadingAnchor, constant: leftInset),
+                  left.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -spacing),
+                  lTop,
+                  lBottom,
+                ])
+              }
             } else {
               let rTop = right.topAnchor.constraint(equalTo: self.container.topAnchor, constant: 14)
               let rBottom = right.bottomAnchor.constraint(equalTo: self.container.bottomAnchor)
@@ -779,6 +817,8 @@ channel.setMethodCallHandler { [weak self] call, result in
             bar.layer.shadowOpacity = 0
             bar.shadowImage = UIImage()
             if let ap = appearance { if #available(iOS 13.0, *) { bar.standardAppearance = ap; if #available(iOS 15.0, *) { bar.scrollEdgeAppearance = ap } } }
+            // FLTR-20361: re-apply the persisted tint — rebuilt bars otherwise default to the system accent.
+            if #available(iOS 10.0, *), let t = self.currentTint { bar.tintColor = t }
             bar.items = buildItems(0..<count)
             if let items = bar.items, selectedIndex >= 0, selectedIndex < items.count { bar.selectedItem = items[selectedIndex] }
             self.container.addSubview(bar)
@@ -847,6 +887,15 @@ channel.setMethodCallHandler { [weak self] call, result in
         if let args = call.arguments as? [String: Any] {
           if let n = args["tint"] as? NSNumber {
             let c = Self.colorFromARGB(n.intValue)
+            self.currentTint = c
+            // FLTR-20361: refresh the appearance so the baked selected color tracks the new tint
+            // and survives later re-split rebuilds, then apply tintColor to the live bars.
+            if #available(iOS 13.0, *) {
+              let ap = self.makeAppearance()
+              if let bar = self.tabBar { bar.standardAppearance = ap; if #available(iOS 15.0, *) { bar.scrollEdgeAppearance = ap } }
+              if let left = self.tabBarLeft { left.standardAppearance = ap; if #available(iOS 15.0, *) { left.scrollEdgeAppearance = ap } }
+              if let right = self.tabBarRight { right.standardAppearance = ap; if #available(iOS 15.0, *) { right.scrollEdgeAppearance = ap } }
+            }
             if let bar = self.tabBar { bar.tintColor = c }
             if let left = self.tabBarLeft { left.tintColor = c }
             if let right = self.tabBarRight { right.tintColor = c }
@@ -1047,7 +1096,23 @@ channel.setMethodCallHandler { [weak self] call, result in
     ap.shadowColor = .clear
     ap.shadowImage = UIImage()
     applyLabelFont(to: ap)
+    // FLTR-20361: bake the selected tint into the appearance so it survives the re-split
+    // rebuilds in setLayout (which re-apply the appearance but don't re-set tintColor).
+    // Without this the selected item reverts to the system accent after expanding.
+    if let tint = currentTint { applySelectedTint(tint, to: ap) }
     return ap
+  }
+
+  /// Sets the selected item's icon + label color across all layout variants, merging the
+  /// color into any existing (font) title attributes so the label color isn't lost.
+  @available(iOS 13.0, *)
+  private func applySelectedTint(_ color: UIColor, to ap: UITabBarAppearance) {
+    for item in [ap.stackedLayoutAppearance, ap.inlineLayoutAppearance, ap.compactInlineLayoutAppearance] {
+      item.selected.iconColor = color
+      var attrs = item.selected.titleTextAttributes
+      attrs[.foregroundColor] = color
+      item.selected.titleTextAttributes = attrs
+    }
   }
 
   /// Applies the current label font to a UITabBarAppearance.
