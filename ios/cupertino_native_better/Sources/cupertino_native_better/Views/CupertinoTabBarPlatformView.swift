@@ -607,8 +607,7 @@ channel.setMethodCallHandler { [weak self] call, result in
           if split, count > rightCount, !self.splitConstraints.isEmpty,
              let left = self.tabBarLeft, let right = self.tabBarRight {
             let leftEnd = count - rightCount
-            // Snap items to their final set (no insert/remove animation) so only the bar widths
-            // tween — animating the item-count change (4↔1) while resizing produced overlap jumble.
+            // Real labelled items — labels stay full through the whole morph (no blanking).
             left.setItems(buildItems(0..<leftEnd), animated: false)
             right.setItems(buildItems(leftEnd..<count), animated: false)
             if #available(iOS 10.0, *), let t = self.currentTint { left.tintColor = t; right.tintColor = t }
@@ -618,11 +617,25 @@ channel.setMethodCallHandler { [weak self] call, result in
               let idx = selectedIndex - leftEnd
               if idx >= 0 && idx < items.count { right.selectedItem = items[idx]; left.selectedItem = nil }
             }
-            NSLayoutConstraint.deactivate(self.splitConstraints)
-            self.splitConstraints = self.makeSplitConstraints(
+            let oldConstraints = self.splitConstraints
+            let newConstraints = self.makeSplitConstraints(
               left: left, right: right, rightCount: rightCount, count: count,
               leftInset: leftInset, rightInset: rightInset, spacing: self.splitSpacingVal)
-            NSLayoutConstraint.activate(self.splitConstraints)
+            // FLTR-20361: lay the items out at the FINAL width FIRST. UITabBar measures a label once
+            // and doesn't re-measure on later bounds changes (that's why an ellipsis stuck before), so
+            // measuring at full width here keeps the labels FULL even while the bar is narrower
+            // mid-animation — and it gives the items real, vertically-centered frames (no top-fly).
+            NSLayoutConstraint.deactivate(oldConstraints)
+            NSLayoutConstraint.activate(newConstraints)
+            left.layoutIfNeeded(); right.layoutIfNeeded()
+            // Snap back to the OLD layout as the animation's starting point (labels stay full).
+            NSLayoutConstraint.deactivate(newConstraints)
+            NSLayoutConstraint.activate(oldConstraints)
+            left.layoutIfNeeded(); right.layoutIfNeeded()
+            // Animate to the final layout.
+            NSLayoutConstraint.deactivate(oldConstraints)
+            NSLayoutConstraint.activate(newConstraints)
+            self.splitConstraints = newConstraints
             UIView.animate(
               withDuration: 0.42, delay: 0, usingSpringWithDamping: 0.88, initialSpringVelocity: 0,
               options: [.allowUserInteraction, .curveEaseInOut]
