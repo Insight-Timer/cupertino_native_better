@@ -35,6 +35,9 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
   // The Dart side only re-sends tint to native when its value changes, so a same-tint
   // re-split would otherwise leave the rebuilt bars on the system accent.
   private var currentTint: UIColor? = nil
+  // FLTR-20361: the split sub-bars' active layout constraints, kept so an animated re-split can
+  // deactivate them and swap in the new set (tweened) instead of tearing the bars down.
+  private var splitConstraints: [NSLayoutConstraint] = []
 
   init(frame: CGRect, viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativeTabBar_\(viewId)", binaryMessenger: messenger)
@@ -234,82 +237,12 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
         left.selectedItem = nil
       }
       container.addSubview(left); container.addSubview(right)
-      // Compute content-fitting widths for both bars and apply symmetric spacing
-      let spacing: CGFloat = splitSpacingVal
-      let leftWidth = left.sizeThatFits(.zero).width + leftInset * 2
-      let rightWidth = right.sizeThatFits(.zero).width + rightInset * 2
-      let total = leftWidth + rightWidth + spacing
-      
-      // Ensure minimum width for single items to maintain circular shape
-      // Following Apple's HIG: minimum 44pt touch target, with 8pt spacing
-      let minItemWidth: CGFloat = 44.0 // Apple's minimum touch target size
-      let adjustedRightWidth = max(rightWidth, minItemWidth * CGFloat(rightCount))
-      let adjustedLeftWidth = max(leftWidth, minItemWidth * CGFloat(count - rightCount))
-      let adjustedTotal = adjustedLeftWidth + adjustedRightWidth + spacing
-
-      // If total exceeds container, fall back to proportional widths
-      if adjustedTotal > container.bounds.width {
-        let rTop = right.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
-        let rBottom = right.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-        let lTop = left.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
-        let lBottom = left.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-        // Lower priority so UIKit can break these against `_UITemporaryLayoutHeight = 0`
-        // during the initial layout pass without logging an unsatisfiable-constraints warning.
-        rTop.priority = .defaultHigh
-        rBottom.priority = .defaultHigh
-        lTop.priority = .defaultHigh
-        lBottom.priority = .defaultHigh
-        if rightCount == 1 {
-          // FLTR-20361: lone pill is on the RIGHT — pin the LEFT group proportionally and let the
-          // right flex, so `splitSpacing` widens the lone right pill (mirrors the lone-left case).
-          let leftFraction = CGFloat(count - rightCount) / CGFloat(count)
-          NSLayoutConstraint.activate([
-            left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
-            lTop,
-            lBottom,
-            left.widthAnchor.constraint(equalTo: container.widthAnchor, multiplier: leftFraction),
-            right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
-            right.leadingAnchor.constraint(equalTo: left.trailingAnchor, constant: spacing),
-            rTop,
-            rBottom,
-          ])
-        } else {
-          let rightFraction = CGFloat(rightCount) / CGFloat(count)
-          NSLayoutConstraint.activate([
-            right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
-            rTop,
-            rBottom,
-            right.widthAnchor.constraint(equalTo: container.widthAnchor, multiplier: rightFraction),
-            left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
-            left.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -spacing),
-            lTop,
-            lBottom,
-          ])
-        }
-      } else {
-        let rTop = right.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
-        let rBottom = right.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-        let lTop = left.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
-        let lBottom = left.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-        rTop.priority = .defaultHigh
-        rBottom.priority = .defaultHigh
-        lTop.priority = .defaultHigh
-        lBottom.priority = .defaultHigh
-        NSLayoutConstraint.activate([
-          // Right bar fixed width, pinned to trailing
-          right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
-          rTop,
-          rBottom,
-          right.widthAnchor.constraint(equalToConstant: adjustedRightWidth),
-          // Left bar fixed width, pinned to leading
-          left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
-          lTop,
-          lBottom,
-          left.widthAnchor.constraint(equalToConstant: adjustedLeftWidth),
-          // Spacing between
-          left.trailingAnchor.constraint(lessThanOrEqualTo: right.leadingAnchor, constant: -spacing),
-        ])
-      }
+      // FLTR-20361: build + store the split constraints via the shared helper so the FIRST
+      // re-split can reuse and animate these initial bars (instead of rebuilding, which snaps).
+      self.splitConstraints = self.makeSplitConstraints(
+        left: left, right: right, rightCount: rightCount, count: count,
+        leftInset: leftInset, rightInset: rightInset, spacing: splitSpacingVal)
+      NSLayoutConstraint.activate(self.splitConstraints)
       // Force layout update for background and text rendering on iOS < 16
       // Re-assign items after layout to ensure labels render properly
       // Capture selectedIndex for restoration after item re-assignment
@@ -592,10 +525,6 @@ channel.setMethodCallHandler { [weak self] call, result in
           let rightInset = self.rightInsetVal
           if let sp = args["splitSpacing"] as? NSNumber { self.splitSpacingVal = CGFloat(truncating: sp) }
           let selectedIndex = (args["selectedIndex"] as? NSNumber)?.intValue ?? 0
-          // Remove existing bars
-          self.tabBar?.removeFromSuperview(); self.tabBar = nil
-          self.tabBarLeft?.removeFromSuperview(); self.tabBarLeft = nil
-          self.tabBarRight?.removeFromSuperview(); self.tabBarRight = nil
           let labels = self.currentLabels
           let symbols = self.currentSymbols
           let activeSymbols = self.currentActiveSymbols
@@ -669,6 +598,46 @@ channel.setMethodCallHandler { [weak self] call, result in
             return items
           }
           let count = max(labels.count, symbols.count)
+
+          // FLTR-20361: ANIMATED RE-SPLIT — if both sub-bars already exist (and we have their
+          // stored constraints), reuse them: morph each bar's items with setItems(animated:) and
+          // tween the width/position by swapping the constraint set inside a spring animation,
+          // instead of tearing the bars down and rebuilding (which snaps). Falls through to the
+          // rebuild path below on the first re-split or whenever the bars/constraints are missing.
+          if split, count > rightCount, !self.splitConstraints.isEmpty,
+             let left = self.tabBarLeft, let right = self.tabBarRight {
+            let leftEnd = count - rightCount
+            // Snap items to their final set (no insert/remove animation) so only the bar widths
+            // tween — animating the item-count change (4↔1) while resizing produced overlap jumble.
+            left.setItems(buildItems(0..<leftEnd), animated: false)
+            right.setItems(buildItems(leftEnd..<count), animated: false)
+            if #available(iOS 10.0, *), let t = self.currentTint { left.tintColor = t; right.tintColor = t }
+            if selectedIndex < leftEnd, let items = left.items, selectedIndex < items.count {
+              left.selectedItem = items[selectedIndex]; right.selectedItem = nil
+            } else if let items = right.items {
+              let idx = selectedIndex - leftEnd
+              if idx >= 0 && idx < items.count { right.selectedItem = items[idx]; left.selectedItem = nil }
+            }
+            NSLayoutConstraint.deactivate(self.splitConstraints)
+            self.splitConstraints = self.makeSplitConstraints(
+              left: left, right: right, rightCount: rightCount, count: count,
+              leftInset: leftInset, rightInset: rightInset, spacing: self.splitSpacingVal)
+            NSLayoutConstraint.activate(self.splitConstraints)
+            UIView.animate(
+              withDuration: 0.42, delay: 0, usingSpringWithDamping: 0.88, initialSpringVelocity: 0,
+              options: [.allowUserInteraction, .curveEaseInOut]
+            ) {
+              self.container.layoutIfNeeded()
+            }
+            result(nil)
+            return
+          }
+
+          // Remove existing bars (full rebuild path)
+          self.tabBar?.removeFromSuperview(); self.tabBar = nil
+          self.tabBarLeft?.removeFromSuperview(); self.tabBarLeft = nil
+          self.tabBarRight?.removeFromSuperview(); self.tabBarRight = nil
+          self.splitConstraints = []
           if split && count > rightCount {
             let leftEnd = count - rightCount
             let left = UITabBar(frame: .zero)
@@ -694,74 +663,11 @@ channel.setMethodCallHandler { [weak self] call, result in
             if selectedIndex < leftEnd, let items = left.items { left.selectedItem = items[selectedIndex]; right.selectedItem = nil }
             else if let items = right.items { let idx = selectedIndex - leftEnd; if idx >= 0 && idx < items.count { right.selectedItem = items[idx]; left.selectedItem = nil } }
             self.container.addSubview(left); self.container.addSubview(right)
-            let spacing: CGFloat = splitSpacingVal
-            let leftWidth = left.sizeThatFits(.zero).width + leftInset * 2
-            let rightWidth = right.sizeThatFits(.zero).width + rightInset * 2
-            let total = leftWidth + rightWidth + spacing
-            
-            // Ensure minimum width for single items to maintain circular shape
-            let minItemWidth: CGFloat = 50.0 // Minimum width per item
-            let adjustedRightWidth = max(rightWidth, minItemWidth * CGFloat(rightCount))
-            let adjustedLeftWidth = max(leftWidth, minItemWidth * CGFloat(count - rightCount))
-            let adjustedTotal = adjustedLeftWidth + adjustedRightWidth + spacing
-
-            if adjustedTotal > self.container.bounds.width {
-              let rTop = right.topAnchor.constraint(equalTo: self.container.topAnchor, constant: 14)
-              let rBottom = right.bottomAnchor.constraint(equalTo: self.container.bottomAnchor)
-              let lTop = left.topAnchor.constraint(equalTo: self.container.topAnchor, constant: 14)
-              let lBottom = left.bottomAnchor.constraint(equalTo: self.container.bottomAnchor)
-              rTop.priority = .defaultHigh
-              rBottom.priority = .defaultHigh
-              lTop.priority = .defaultHigh
-              lBottom.priority = .defaultHigh
-              if rightCount == 1 {
-                // FLTR-20361: lone pill is on the RIGHT — pin the LEFT group proportionally and let
-                // the right flex, so `splitSpacing` widens the lone right pill (mirrors lone-left).
-                let leftFraction = CGFloat(count - rightCount) / CGFloat(count)
-                NSLayoutConstraint.activate([
-                  left.leadingAnchor.constraint(equalTo: self.container.leadingAnchor, constant: leftInset),
-                  lTop,
-                  lBottom,
-                  left.widthAnchor.constraint(equalTo: self.container.widthAnchor, multiplier: leftFraction),
-                  right.trailingAnchor.constraint(equalTo: self.container.trailingAnchor, constant: -rightInset),
-                  right.leadingAnchor.constraint(equalTo: left.trailingAnchor, constant: spacing),
-                  rTop,
-                  rBottom,
-                ])
-              } else {
-                let rightFraction = CGFloat(rightCount) / CGFloat(count)
-                NSLayoutConstraint.activate([
-                  right.trailingAnchor.constraint(equalTo: self.container.trailingAnchor, constant: -rightInset),
-                  rTop,
-                  rBottom,
-                  right.widthAnchor.constraint(equalTo: self.container.widthAnchor, multiplier: rightFraction),
-                  left.leadingAnchor.constraint(equalTo: self.container.leadingAnchor, constant: leftInset),
-                  left.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -spacing),
-                  lTop,
-                  lBottom,
-                ])
-              }
-            } else {
-              let rTop = right.topAnchor.constraint(equalTo: self.container.topAnchor, constant: 14)
-              let rBottom = right.bottomAnchor.constraint(equalTo: self.container.bottomAnchor)
-              let lTop = left.topAnchor.constraint(equalTo: self.container.topAnchor, constant: 14)
-              let lBottom = left.bottomAnchor.constraint(equalTo: self.container.bottomAnchor)
-              rTop.priority = .defaultHigh
-              rBottom.priority = .defaultHigh
-              lTop.priority = .defaultHigh
-              lBottom.priority = .defaultHigh
-              NSLayoutConstraint.activate([
-                right.trailingAnchor.constraint(equalTo: self.container.trailingAnchor, constant: -rightInset),
-                rTop,
-                rBottom,
-                right.widthAnchor.constraint(equalToConstant: adjustedRightWidth),
-                left.leadingAnchor.constraint(equalTo: self.container.leadingAnchor, constant: leftInset),
-                lTop,
-                lBottom,
-                left.widthAnchor.constraint(equalToConstant: adjustedLeftWidth),
-                left.trailingAnchor.constraint(lessThanOrEqualTo: right.leadingAnchor, constant: -spacing),
-              ])
-            }
+            // FLTR-20361: store the split constraints so a later animated re-split can tween them.
+            self.splitConstraints = self.makeSplitConstraints(
+              left: left, right: right, rightCount: rightCount, count: count,
+              leftInset: leftInset, rightInset: rightInset, spacing: self.splitSpacingVal)
+            NSLayoutConstraint.activate(self.splitConstraints)
             // Force layout update for background and text rendering on iOS < 16
             // Re-assign items after layout to ensure labels render properly
             // Capture selectedIndex for restoration after item re-assignment
@@ -1085,6 +991,68 @@ channel.setMethodCallHandler { [weak self] call, result in
   }
 
   func view() -> UIView { container }
+
+  // MARK: - Split layout
+
+  /// FLTR-20361: Builds (does NOT activate) the constraints positioning the two split sub-bars.
+  /// Shared by the rebuild and the animated-reuse paths so both lay out identically:
+  ///  - When content overflows the container, one side is pinned to a proportional width and the
+  ///    other flexes; the lone single-item side is always the flexing one (so `splitSpacing`
+  ///    widens the lone pill on either side).
+  ///  - Otherwise both sides use their content-fitting constant widths.
+  private func makeSplitConstraints(
+    left: UITabBar, right: UITabBar, rightCount: Int, count: Int,
+    leftInset: CGFloat, rightInset: CGFloat, spacing: CGFloat
+  ) -> [NSLayoutConstraint] {
+    let leftWidth = left.sizeThatFits(.zero).width + leftInset * 2
+    let rightWidth = right.sizeThatFits(.zero).width + rightInset * 2
+    let minItemWidth: CGFloat = 50.0
+    let adjustedRightWidth = max(rightWidth, minItemWidth * CGFloat(rightCount))
+    let adjustedLeftWidth = max(leftWidth, minItemWidth * CGFloat(count - rightCount))
+    let adjustedTotal = adjustedLeftWidth + adjustedRightWidth + spacing
+    let rTop = right.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
+    let rBottom = right.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+    let lTop = left.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
+    let lBottom = left.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+    rTop.priority = .defaultHigh
+    rBottom.priority = .defaultHigh
+    lTop.priority = .defaultHigh
+    lBottom.priority = .defaultHigh
+    if adjustedTotal > container.bounds.width {
+      if rightCount == 1 {
+        // Lone pill on the RIGHT — pin the LEFT group, let the right flex (splitSpacing widens it).
+        let leftFraction = CGFloat(count - rightCount) / CGFloat(count)
+        return [
+          left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
+          lTop, lBottom,
+          left.widthAnchor.constraint(equalTo: container.widthAnchor, multiplier: leftFraction),
+          right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
+          right.leadingAnchor.constraint(equalTo: left.trailingAnchor, constant: spacing),
+          rTop, rBottom,
+        ]
+      } else {
+        let rightFraction = CGFloat(rightCount) / CGFloat(count)
+        return [
+          right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
+          rTop, rBottom,
+          right.widthAnchor.constraint(equalTo: container.widthAnchor, multiplier: rightFraction),
+          left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
+          left.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -spacing),
+          lTop, lBottom,
+        ]
+      }
+    } else {
+      return [
+        right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
+        rTop, rBottom,
+        right.widthAnchor.constraint(equalToConstant: adjustedRightWidth),
+        left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
+        lTop, lBottom,
+        left.widthAnchor.constraint(equalToConstant: adjustedLeftWidth),
+        left.trailingAnchor.constraint(lessThanOrEqualTo: right.leadingAnchor, constant: -spacing),
+      ]
+    }
+  }
 
   // MARK: - Appearance helpers
 
