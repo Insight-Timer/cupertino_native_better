@@ -66,6 +66,13 @@ class LiquidGlassContainerPlatformView: NSObject, FlutterPlatformView {
 
     self.hostingController = UIHostingController(rootView: glassView)
     self.hostingController.view.backgroundColor = .clear
+    // UIHostingController insets its SwiftUI content for safe-area regions by default. When this
+    // glass sits inside the bottom safe area (e.g. a nav bar positioned low on screen), that inset
+    // shrinks the rendered capsule so it no longer fills its Flutter-given frame. Disable it so the
+    // glass always fills its frame regardless of where on screen it sits. (iOS 16.4+; class is iOS 26+.)
+    if #available(iOS 16.4, *) {
+      self.hostingController.safeAreaRegions = []
+    }
     self.hostingController.overrideUserInterfaceStyle = isDark ? .dark : .light
 
     super.init()
@@ -230,6 +237,9 @@ struct LiquidGlassContainerSwiftUI: View {
         .glassEffect(glassEffectForConfig(), in: shapeForConfig())
         .frame(width: geometry.size.width, height: geometry.size.height)
     }
+    // Belt-and-suspenders with the hosting controller's safeAreaRegions = []: never inset the
+    // glass for the safe area, so it fills its frame even when positioned in the bottom safe area.
+    .ignoresSafeArea()
   }
   
   private func glassEffectForConfig() -> Glass {
