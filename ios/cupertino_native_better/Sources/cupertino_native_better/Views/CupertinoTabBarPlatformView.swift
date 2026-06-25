@@ -1017,12 +1017,6 @@ channel.setMethodCallHandler { [weak self] call, result in
     left: UITabBar, right: UITabBar, rightCount: Int, count: Int,
     leftInset: CGFloat, rightInset: CGFloat, spacing: CGFloat
   ) -> [NSLayoutConstraint] {
-    let leftWidth = left.sizeThatFits(.zero).width + leftInset * 2
-    let rightWidth = right.sizeThatFits(.zero).width + rightInset * 2
-    let minItemWidth: CGFloat = 50.0
-    let adjustedRightWidth = max(rightWidth, minItemWidth * CGFloat(rightCount))
-    let adjustedLeftWidth = max(leftWidth, minItemWidth * CGFloat(count - rightCount))
-    let adjustedTotal = adjustedLeftWidth + adjustedRightWidth + spacing
     let rTop = right.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
     let rBottom = right.bottomAnchor.constraint(equalTo: container.bottomAnchor)
     let lTop = left.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
@@ -1031,30 +1025,42 @@ channel.setMethodCallHandler { [weak self] call, result in
     rBottom.priority = .defaultHigh
     lTop.priority = .defaultHigh
     lBottom.priority = .defaultHigh
-    if adjustedTotal > container.bounds.width {
-      if rightCount == 1 {
-        // Lone pill on the RIGHT — pin the LEFT group, let the right flex (splitSpacing widens it).
-        let leftFraction = CGFloat(count - rightCount) / CGFloat(count)
-        return [
-          left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
-          lTop, lBottom,
-          left.widthAnchor.constraint(equalTo: container.widthAnchor, multiplier: leftFraction),
-          right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
-          right.leadingAnchor.constraint(equalTo: left.trailingAnchor, constant: spacing),
-          rTop, rBottom,
-        ]
-      } else {
-        let rightFraction = CGFloat(rightCount) / CGFloat(count)
-        return [
-          right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
-          rTop, rBottom,
-          right.widthAnchor.constraint(equalTo: container.widthAnchor, multiplier: rightFraction),
-          left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
-          left.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -spacing),
-          lTop, lBottom,
-        ]
-      }
+
+    // FLTR-20361: a single-item side is a fixed circle (diameter = pill height); the multi-item
+    // side fills the remaining width. `spacing` is purely the gap between the two pills. This keeps
+    // the lone pill a circle on every device, instead of flexing it to a device-proportional width
+    // (which squashed it on narrower screens / larger label widths).
+    let leftCount = count - rightCount
+    let pillHeight = container.bounds.height - 14
+    let loneDiameter = max(pillHeight, 44)
+
+    if rightCount == 1 {
+      // Lone circle on the RIGHT; the LEFT group fills the rest.
+      return [
+        right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
+        rTop, rBottom,
+        right.widthAnchor.constraint(equalToConstant: loneDiameter),
+        left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
+        lTop, lBottom,
+        left.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -spacing),
+      ]
+    } else if leftCount == 1 {
+      // Lone circle on the LEFT; the RIGHT group fills the rest.
+      return [
+        left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
+        lTop, lBottom,
+        left.widthAnchor.constraint(equalToConstant: loneDiameter),
+        right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
+        rTop, rBottom,
+        right.leadingAnchor.constraint(equalTo: left.trailingAnchor, constant: spacing),
+      ]
     } else {
+      // Neither side is a single item — content-fit both (not used by the 2026 nav).
+      let leftWidth = left.sizeThatFits(.zero).width + leftInset * 2
+      let rightWidth = right.sizeThatFits(.zero).width + rightInset * 2
+      let minItemWidth: CGFloat = 50.0
+      let adjustedRightWidth = max(rightWidth, minItemWidth * CGFloat(rightCount))
+      let adjustedLeftWidth = max(leftWidth, minItemWidth * CGFloat(leftCount))
       return [
         right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
         rTop, rBottom,
