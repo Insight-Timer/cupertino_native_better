@@ -29,6 +29,9 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
   private var rightInsetVal: CGFloat = 0
   private var splitSpacingVal: CGFloat = 12 // Apple's recommended spacing for visual separation
   private var currentIconSizes: [CGFloat] = [] // Track icon sizes for dynamic height calculation
+  // Per-item icon color as ARGB (0 = none). When set, that item's asset icon renders in its own
+  // color (immune to the bar's selection tint) — e.g. var-1's always-green back chevron.
+  private var currentColors: [Int] = []
   private var labelFontFamily: String? = nil
   private var labelFontSize: CGFloat = 0 // 0 means system default (~10pt)
   // FLTR-20361: latest tint, persisted so re-split rebuilds in `setLayout` can re-apply it.
@@ -57,7 +60,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
     var activeImageAssetFormats: [String] = []
     var iconScale: CGFloat = UIScreen.main.scale
     var sizes: [NSNumber?] = []
-    var colors: [NSNumber] = [] // ignored; use tintColor
+    var colors: [Int] = [] // per-item icon color (ARGB; 0 = use bar tint)
     var selectedIndex: Int = 0
     var isDark: Bool = false
     var tint: UIColor? = nil
@@ -92,7 +95,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
         iconScale = CGFloat(truncating: scale)
       }
       sizes = (dict["sfSymbolSizes"] as? [NSNumber?]) ?? []
-      colors = (dict["sfSymbolColors"] as? [NSNumber]) ?? []
+      colors = (dict["sfSymbolColors"] as? [Any])?.map { ($0 as? NSNumber)?.intValue ?? 0 } ?? []
       if let v = dict["selectedIndex"] as? NSNumber { selectedIndex = v.intValue }
       if let v = dict["isDark"] as? NSNumber { isDark = v.boolValue }
       if let style = dict["style"] as? [String: Any] {
@@ -130,6 +133,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
     // on simulator that is NOT visible on a real iOS 26+ device. Always
     // verify Liquid Glass behaviour on hardware before treating a
     // visual artifact here as a bug.
+    self.currentColors = colors
     container.clipsToBounds = true
     container.layer.shadowOpacity = 0 // Explicitly disable layer shadow
     if #available(iOS 13.0, *) { container.overrideUserInterfaceStyle = isDark ? .dark : .light }
@@ -152,7 +156,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
         if i < imageAssetData.count, let data = imageAssetData[i] {
           image = Self.createImageFromData(data, format: (i < imageAssetFormats.count) ? imageAssetFormats[i] : nil, scale: iconScale, size: imgSize)
         } else if i < imageAssetPaths.count && !imageAssetPaths[i].isEmpty {
-          image = Self.loadFlutterAsset(imageAssetPaths[i], size: imgSize)?.withRenderingMode(.alwaysTemplate)
+          image = Self.renderedAssetIcon(Self.loadFlutterAsset(imageAssetPaths[i], size: imgSize), colorARGB: (i < colors.count) ? colors[i] : 0)
         } else if i < customIconBytes.count, let data = customIconBytes[i] {
           image = UIImage(data: data, scale: self.iconScale)?.withRenderingMode(.alwaysTemplate)
         } else if i < symbols.count && !symbols[i].isEmpty {
@@ -169,7 +173,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
         if i < activeImageAssetData.count, let data = activeImageAssetData[i] {
           selectedImage = Self.createImageFromData(data, format: (i < activeImageAssetFormats.count) ? activeImageAssetFormats[i] : nil, scale: iconScale, size: imgSize)
         } else if i < activeImageAssetPaths.count && !activeImageAssetPaths[i].isEmpty {
-          selectedImage = Self.loadFlutterAsset(activeImageAssetPaths[i], size: imgSize)?.withRenderingMode(.alwaysTemplate)
+          selectedImage = Self.renderedAssetIcon(Self.loadFlutterAsset(activeImageAssetPaths[i], size: imgSize), colorARGB: (i < colors.count) ? colors[i] : 0)
         } else if i < activeCustomIconBytes.count, let data = activeCustomIconBytes[i] {
           selectedImage = UIImage(data: data, scale: self.iconScale)?.withRenderingMode(.alwaysTemplate)
         } else if i < activeSymbols.count && !activeSymbols[i].isEmpty {
@@ -392,6 +396,8 @@ channel.setMethodCallHandler { [weak self] call, result in
           let activeSymbols = (args["activeSfSymbols"] as? [String]) ?? []
           let badges = (args["badges"] as? [String]) ?? []
           let sizes = (args["sfSymbolSizes"] as? [NSNumber?]) ?? []
+          let colors = (args["sfSymbolColors"] as? [Any])?.map { ($0 as? NSNumber)?.intValue ?? 0 } ?? self.currentColors
+          self.currentColors = colors
           var customIconBytes: [Data?] = []
           var activeCustomIconBytes: [Data?] = []
           var imageAssetPaths: [String] = []
@@ -448,7 +454,7 @@ channel.setMethodCallHandler { [weak self] call, result in
               if i < imageAssetData.count, let data = imageAssetData[i] {
                 image = Self.createImageFromData(data, format: (i < imageAssetFormats.count) ? imageAssetFormats[i] : nil, scale: self.iconScale, size: imgSize)
               } else if i < imageAssetPaths.count && !imageAssetPaths[i].isEmpty {
-                image = Self.loadFlutterAsset(imageAssetPaths[i], size: imgSize)?.withRenderingMode(.alwaysTemplate)
+                image = Self.renderedAssetIcon(Self.loadFlutterAsset(imageAssetPaths[i], size: imgSize), colorARGB: (i < colors.count) ? colors[i] : 0)
               } else if i < customIconBytes.count, let data = customIconBytes[i] {
                 image = UIImage(data: data, scale: self.iconScale)?.withRenderingMode(.alwaysTemplate)
               } else if i < symbols.count && !symbols[i].isEmpty {
@@ -465,7 +471,7 @@ channel.setMethodCallHandler { [weak self] call, result in
               if i < activeImageAssetData.count, let data = activeImageAssetData[i] {
                 selectedImage = Self.createImageFromData(data, format: (i < activeImageAssetFormats.count) ? activeImageAssetFormats[i] : nil, scale: self.iconScale, size: imgSize)
               } else if i < activeImageAssetPaths.count && !activeImageAssetPaths[i].isEmpty {
-                selectedImage = Self.loadFlutterAsset(activeImageAssetPaths[i], size: imgSize)?.withRenderingMode(.alwaysTemplate)
+                selectedImage = Self.renderedAssetIcon(Self.loadFlutterAsset(activeImageAssetPaths[i], size: imgSize), colorARGB: (i < colors.count) ? colors[i] : 0)
               } else if i < activeCustomIconBytes.count, let data = activeCustomIconBytes[i] {
                 selectedImage = UIImage(data: data, scale: self.iconScale)?.withRenderingMode(.alwaysTemplate)
               } else if i < activeSymbols.count && !activeSymbols[i].isEmpty {
@@ -542,6 +548,7 @@ channel.setMethodCallHandler { [weak self] call, result in
             return nil
           }()
           let iconSizes = self.currentIconSizes
+          let colors = self.currentColors
           func buildItems(_ range: Range<Int>) -> [UITabBarItem] {
             var items: [UITabBarItem] = []
             for i in range {
@@ -556,7 +563,7 @@ channel.setMethodCallHandler { [weak self] call, result in
               if i < imageAssetData.count, let data = imageAssetData[i] {
                 image = Self.createImageFromData(data, format: (i < imageAssetFormats.count) ? imageAssetFormats[i] : nil, scale: self.iconScale, size: imgSize)
               } else if i < imageAssetPaths.count && !imageAssetPaths[i].isEmpty {
-                image = Self.loadFlutterAsset(imageAssetPaths[i], size: imgSize)?.withRenderingMode(.alwaysTemplate)
+                image = Self.renderedAssetIcon(Self.loadFlutterAsset(imageAssetPaths[i], size: imgSize), colorARGB: (i < colors.count) ? colors[i] : 0)
               } else if i < customIconBytes.count, let data = customIconBytes[i] {
                 image = UIImage(data: data, scale: self.iconScale)?.withRenderingMode(.alwaysTemplate)
               } else if i < symbols.count && !symbols[i].isEmpty {
@@ -573,7 +580,7 @@ channel.setMethodCallHandler { [weak self] call, result in
               if i < activeImageAssetData.count, let data = activeImageAssetData[i] {
                 selectedImage = Self.createImageFromData(data, format: (i < activeImageAssetFormats.count) ? activeImageAssetFormats[i] : nil, scale: self.iconScale, size: imgSize)
               } else if i < activeImageAssetPaths.count && !activeImageAssetPaths[i].isEmpty {
-                selectedImage = Self.loadFlutterAsset(activeImageAssetPaths[i], size: imgSize)?.withRenderingMode(.alwaysTemplate)
+                selectedImage = Self.renderedAssetIcon(Self.loadFlutterAsset(activeImageAssetPaths[i], size: imgSize), colorARGB: (i < colors.count) ? colors[i] : 0)
               } else if i < activeCustomIconBytes.count, let data = activeCustomIconBytes[i] {
                 selectedImage = UIImage(data: data, scale: self.iconScale)?.withRenderingMode(.alwaysTemplate)
               } else if i < activeSymbols.count && !activeSymbols[i].isEmpty {
@@ -1017,6 +1024,12 @@ channel.setMethodCallHandler { [weak self] call, result in
     left: UITabBar, right: UITabBar, rightCount: Int, count: Int,
     leftInset: CGFloat, rightInset: CGFloat, spacing: CGFloat
   ) -> [NSLayoutConstraint] {
+    let leftWidth = left.sizeThatFits(.zero).width + leftInset * 2
+    let rightWidth = right.sizeThatFits(.zero).width + rightInset * 2
+    let minItemWidth: CGFloat = 50.0
+    let adjustedRightWidth = max(rightWidth, minItemWidth * CGFloat(rightCount))
+    let adjustedLeftWidth = max(leftWidth, minItemWidth * CGFloat(count - rightCount))
+    let adjustedTotal = adjustedLeftWidth + adjustedRightWidth + spacing
     let rTop = right.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
     let rBottom = right.bottomAnchor.constraint(equalTo: container.bottomAnchor)
     let lTop = left.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
@@ -1025,42 +1038,30 @@ channel.setMethodCallHandler { [weak self] call, result in
     rBottom.priority = .defaultHigh
     lTop.priority = .defaultHigh
     lBottom.priority = .defaultHigh
-
-    // FLTR-20361: a single-item side is a fixed circle (diameter = pill height); the multi-item
-    // side fills the remaining width. `spacing` is purely the gap between the two pills. This keeps
-    // the lone pill a circle on every device, instead of flexing it to a device-proportional width
-    // (which squashed it on narrower screens / larger label widths).
-    let leftCount = count - rightCount
-    let pillHeight = container.bounds.height - 14
-    let loneDiameter = max(pillHeight, 44)
-
-    if rightCount == 1 {
-      // Lone circle on the RIGHT; the LEFT group fills the rest.
-      return [
-        right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
-        rTop, rBottom,
-        right.widthAnchor.constraint(equalToConstant: loneDiameter),
-        left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
-        lTop, lBottom,
-        left.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -spacing),
-      ]
-    } else if leftCount == 1 {
-      // Lone circle on the LEFT; the RIGHT group fills the rest.
-      return [
-        left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
-        lTop, lBottom,
-        left.widthAnchor.constraint(equalToConstant: loneDiameter),
-        right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
-        rTop, rBottom,
-        right.leadingAnchor.constraint(equalTo: left.trailingAnchor, constant: spacing),
-      ]
+    if adjustedTotal > container.bounds.width {
+      if rightCount == 1 {
+        // Lone pill on the RIGHT — pin the LEFT group, let the right flex (splitSpacing widens it).
+        let leftFraction = CGFloat(count - rightCount) / CGFloat(count)
+        return [
+          left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
+          lTop, lBottom,
+          left.widthAnchor.constraint(equalTo: container.widthAnchor, multiplier: leftFraction),
+          right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
+          right.leadingAnchor.constraint(equalTo: left.trailingAnchor, constant: spacing),
+          rTop, rBottom,
+        ]
+      } else {
+        let rightFraction = CGFloat(rightCount) / CGFloat(count)
+        return [
+          right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
+          rTop, rBottom,
+          right.widthAnchor.constraint(equalTo: container.widthAnchor, multiplier: rightFraction),
+          left.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: leftInset),
+          left.trailingAnchor.constraint(equalTo: right.leadingAnchor, constant: -spacing),
+          lTop, lBottom,
+        ]
+      }
     } else {
-      // Neither side is a single item — content-fit both (not used by the 2026 nav).
-      let leftWidth = left.sizeThatFits(.zero).width + leftInset * 2
-      let rightWidth = right.sizeThatFits(.zero).width + rightInset * 2
-      let minItemWidth: CGFloat = 50.0
-      let adjustedRightWidth = max(rightWidth, minItemWidth * CGFloat(rightCount))
-      let adjustedLeftWidth = max(leftWidth, minItemWidth * CGFloat(leftCount))
       return [
         right.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -rightInset),
         rTop, rBottom,
@@ -1145,6 +1146,17 @@ channel.setMethodCallHandler { [weak self] call, result in
 
   private static func loadFlutterAsset(_ assetPath: String, size: CGSize? = nil) -> UIImage? {
     return ImageUtils.loadFlutterAsset(assetPath, size: size)
+  }
+
+  /// Renders an asset icon either as a template (the default — so the bar's selection tint
+  /// colors it) or, when a per-item ARGB color is set (non-zero), in that fixed color via
+  /// `.alwaysOriginal` so it stays that color regardless of selection.
+  private static func renderedAssetIcon(_ image: UIImage?, colorARGB: Int) -> UIImage? {
+    guard let image = image else { return nil }
+    if colorARGB != 0, #available(iOS 13.0, *) {
+      return image.withTintColor(Self.colorFromARGB(colorARGB), renderingMode: .alwaysOriginal)
+    }
+    return image.withRenderingMode(.alwaysTemplate)
   }
 
   private static func createImageFromData(_ data: Data, format: String?, scale: CGFloat, size: CGSize? = nil) -> UIImage? {
