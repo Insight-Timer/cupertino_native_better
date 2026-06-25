@@ -152,7 +152,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
         if i < imageAssetData.count, let data = imageAssetData[i] {
           image = Self.createImageFromData(data, format: (i < imageAssetFormats.count) ? imageAssetFormats[i] : nil, scale: iconScale, size: imgSize)
         } else if i < imageAssetPaths.count && !imageAssetPaths[i].isEmpty {
-          image = Self.loadFlutterAsset(imageAssetPaths[i], size: imgSize)
+          image = Self.loadFlutterAsset(imageAssetPaths[i], size: imgSize)?.withRenderingMode(.alwaysTemplate)
         } else if i < customIconBytes.count, let data = customIconBytes[i] {
           image = UIImage(data: data, scale: self.iconScale)?.withRenderingMode(.alwaysTemplate)
         } else if i < symbols.count && !symbols[i].isEmpty {
@@ -169,7 +169,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
         if i < activeImageAssetData.count, let data = activeImageAssetData[i] {
           selectedImage = Self.createImageFromData(data, format: (i < activeImageAssetFormats.count) ? activeImageAssetFormats[i] : nil, scale: iconScale, size: imgSize)
         } else if i < activeImageAssetPaths.count && !activeImageAssetPaths[i].isEmpty {
-          selectedImage = Self.loadFlutterAsset(activeImageAssetPaths[i], size: imgSize)
+          selectedImage = Self.loadFlutterAsset(activeImageAssetPaths[i], size: imgSize)?.withRenderingMode(.alwaysTemplate)
         } else if i < activeCustomIconBytes.count, let data = activeCustomIconBytes[i] {
           selectedImage = UIImage(data: data, scale: self.iconScale)?.withRenderingMode(.alwaysTemplate)
         } else if i < activeSymbols.count && !activeSymbols[i].isEmpty {
@@ -448,7 +448,7 @@ channel.setMethodCallHandler { [weak self] call, result in
               if i < imageAssetData.count, let data = imageAssetData[i] {
                 image = Self.createImageFromData(data, format: (i < imageAssetFormats.count) ? imageAssetFormats[i] : nil, scale: self.iconScale, size: imgSize)
               } else if i < imageAssetPaths.count && !imageAssetPaths[i].isEmpty {
-                image = Self.loadFlutterAsset(imageAssetPaths[i], size: imgSize)
+                image = Self.loadFlutterAsset(imageAssetPaths[i], size: imgSize)?.withRenderingMode(.alwaysTemplate)
               } else if i < customIconBytes.count, let data = customIconBytes[i] {
                 image = UIImage(data: data, scale: self.iconScale)?.withRenderingMode(.alwaysTemplate)
               } else if i < symbols.count && !symbols[i].isEmpty {
@@ -465,7 +465,7 @@ channel.setMethodCallHandler { [weak self] call, result in
               if i < activeImageAssetData.count, let data = activeImageAssetData[i] {
                 selectedImage = Self.createImageFromData(data, format: (i < activeImageAssetFormats.count) ? activeImageAssetFormats[i] : nil, scale: self.iconScale, size: imgSize)
               } else if i < activeImageAssetPaths.count && !activeImageAssetPaths[i].isEmpty {
-                selectedImage = Self.loadFlutterAsset(activeImageAssetPaths[i], size: imgSize)
+                selectedImage = Self.loadFlutterAsset(activeImageAssetPaths[i], size: imgSize)?.withRenderingMode(.alwaysTemplate)
               } else if i < activeCustomIconBytes.count, let data = activeCustomIconBytes[i] {
                 selectedImage = UIImage(data: data, scale: self.iconScale)?.withRenderingMode(.alwaysTemplate)
               } else if i < activeSymbols.count && !activeSymbols[i].isEmpty {
@@ -556,7 +556,7 @@ channel.setMethodCallHandler { [weak self] call, result in
               if i < imageAssetData.count, let data = imageAssetData[i] {
                 image = Self.createImageFromData(data, format: (i < imageAssetFormats.count) ? imageAssetFormats[i] : nil, scale: self.iconScale, size: imgSize)
               } else if i < imageAssetPaths.count && !imageAssetPaths[i].isEmpty {
-                image = Self.loadFlutterAsset(imageAssetPaths[i], size: imgSize)
+                image = Self.loadFlutterAsset(imageAssetPaths[i], size: imgSize)?.withRenderingMode(.alwaysTemplate)
               } else if i < customIconBytes.count, let data = customIconBytes[i] {
                 image = UIImage(data: data, scale: self.iconScale)?.withRenderingMode(.alwaysTemplate)
               } else if i < symbols.count && !symbols[i].isEmpty {
@@ -573,7 +573,7 @@ channel.setMethodCallHandler { [weak self] call, result in
               if i < activeImageAssetData.count, let data = activeImageAssetData[i] {
                 selectedImage = Self.createImageFromData(data, format: (i < activeImageAssetFormats.count) ? activeImageAssetFormats[i] : nil, scale: self.iconScale, size: imgSize)
               } else if i < activeImageAssetPaths.count && !activeImageAssetPaths[i].isEmpty {
-                selectedImage = Self.loadFlutterAsset(activeImageAssetPaths[i], size: imgSize)
+                selectedImage = Self.loadFlutterAsset(activeImageAssetPaths[i], size: imgSize)?.withRenderingMode(.alwaysTemplate)
               } else if i < activeCustomIconBytes.count, let data = activeCustomIconBytes[i] {
                 selectedImage = UIImage(data: data, scale: self.iconScale)?.withRenderingMode(.alwaysTemplate)
               } else if i < activeSymbols.count && !activeSymbols[i].isEmpty {
