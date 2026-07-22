@@ -15,6 +15,12 @@ class LiquidGlassContainerPlatformView: NSObject, FlutterPlatformView {
   // scrim as four square shadow nubs at the corners (Issue #36).
   private var configuredShape: String = "capsule"
   private var configuredCornerRadius: CGFloat? = nil
+  // Full live-glass config, retained so we can rebuild the SwiftUI root when toggling the live
+  // backdrop off/on (Issue #31: suppress the live glass while a modal covers us).
+  private var configuredEffect: String = "regular"
+  private var configuredTint: UIColor? = nil
+  private var configuredInteractive: Bool = false
+  private var isContained: Bool = false
 
   init(frame: CGRect, viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativeLiquidGlassContainer_\(viewId)", binaryMessenger: messenger)
@@ -78,6 +84,9 @@ class LiquidGlassContainerPlatformView: NSObject, FlutterPlatformView {
     super.init()
     self.configuredShape = shape
     self.configuredCornerRadius = cornerRadius
+    self.configuredEffect = effect
+    self.configuredTint = tint
+    self.configuredInteractive = interactive
 
     container.onDidMoveToWindow = { [weak self] window in
       guard window != nil else { return }
@@ -123,6 +132,8 @@ class LiquidGlassContainerPlatformView: NSObject, FlutterPlatformView {
   /// layer's drop shadow doesn't leak past the rounded corners and show
   /// up as four square shadow nubs behind a modal scrim.
   private func applyTransitionContainment(_ active: Bool) {
+    if active == isContained { return }
+    isContained = active
     if active {
       let radius = roundedCornerRadiusForCurrentShape()
       container.isOpaque = false
@@ -141,6 +152,21 @@ class LiquidGlassContainerPlatformView: NSObject, FlutterPlatformView {
       hostingController.view.clipsToBounds = false
       hostingController.view.layer.cornerRadius = 0
     }
+    // Issue #31: the live `.glassEffect` is a render-server backdrop pass that iOS composites over
+    // Flutter-drawn modal content sitting above us. While covered, drop to a static (no-backdrop)
+    // view so there's nothing to composite over the sheet; restore the live glass when uncovered.
+    hostingController.rootView = makeGlassView(suppressed: active)
+  }
+
+  private func makeGlassView(suppressed: Bool) -> LiquidGlassContainerSwiftUI {
+    return LiquidGlassContainerSwiftUI(
+      effect: configuredEffect,
+      shape: configuredShape,
+      cornerRadius: configuredCornerRadius,
+      tint: configuredTint,
+      interactive: configuredInteractive,
+      suppressed: suppressed
+    )
   }
 
   private func roundedCornerRadiusForCurrentShape() -> CGFloat {
@@ -190,20 +216,16 @@ class LiquidGlassContainerPlatformView: NSObject, FlutterPlatformView {
       isDark = isDarkBool
     }
     
-    // Update the SwiftUI view
-    let newGlassView = LiquidGlassContainerSwiftUI(
-      effect: effect,
-      shape: shape,
-      cornerRadius: cornerRadius,
-      tint: tint,
-      interactive: interactive
-    )
-
-    hostingController.rootView = newGlassView
-    hostingController.overrideUserInterfaceStyle = isDark ? .dark : .light
-    // Keep stored config in sync for `applyTransitionContainment`.
+    // Keep stored config in sync for `applyTransitionContainment` / `makeGlassView`.
+    self.configuredEffect = effect
     self.configuredShape = shape
     self.configuredCornerRadius = cornerRadius
+    self.configuredTint = tint
+    self.configuredInteractive = interactive
+
+    // Rebuild preserving the current suppressed state (don't re-enable live glass while covered).
+    hostingController.rootView = makeGlassView(suppressed: isContained)
+    hostingController.overrideUserInterfaceStyle = isDark ? .dark : .light
     refreshGlass()
   }
 
@@ -227,15 +249,22 @@ struct LiquidGlassContainerSwiftUI: View {
   let cornerRadius: CGFloat?
   let tint: UIColor?
   let interactive: Bool
+  var suppressed: Bool = false
 
   var body: some View {
     GeometryReader { geometry in
-      shapeForConfig()
-        .fill(Color.clear)
-        .contentShape(shapeForConfig())
-        .allowsHitTesting(false)  // Always false - let Flutter handle gestures
-        .glassEffect(glassEffectForConfig(), in: shapeForConfig())
-        .frame(width: geometry.size.width, height: geometry.size.height)
+      if suppressed {
+        // No `.glassEffect` → no live backdrop pass for iOS to composite over a modal above us.
+        Color.clear
+          .frame(width: geometry.size.width, height: geometry.size.height)
+      } else {
+        shapeForConfig()
+          .fill(Color.clear)
+          .contentShape(shapeForConfig())
+          .allowsHitTesting(false)  // Always false - let Flutter handle gestures
+          .glassEffect(glassEffectForConfig(), in: shapeForConfig())
+          .frame(width: geometry.size.width, height: geometry.size.height)
+      }
     }
     // Belt-and-suspenders with the hosting controller's safeAreaRegions = []: never inset the
     // glass for the safe area, so it fills its frame even when positioned in the bottom safe area.

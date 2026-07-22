@@ -1453,7 +1453,22 @@ class CNTabBarRouteObserver extends NavigatorObserver {
 
   @override
   void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    _bumpDown(route);
+    // Defer the decrement until the pop animation finishes, so glass widgets stay contained
+    // until the sheet has fully slid away. Decrementing at pop-start lets the live glass reappear
+    // over the still-closing sheet as a visible blink (Issue #31 close-transition).
+    final anim = route is TransitionRoute<dynamic> ? route.animation : null;
+    if (anim != null && anim.status != AnimationStatus.dismissed) {
+      void statusListener(AnimationStatus status) {
+        if (status == AnimationStatus.dismissed || status == AnimationStatus.completed) {
+          anim.removeStatusListener(statusListener);
+          _bumpDown(route);
+        }
+      }
+
+      anim.addStatusListener(statusListener);
+    } else {
+      _bumpDown(route);
+    }
   }
 
   @override
