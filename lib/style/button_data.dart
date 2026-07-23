@@ -12,6 +12,18 @@ import 'button_style.dart';
 import 'sf_symbol.dart';
 import 'image_placement.dart';
 
+/// Item for a popup menu button in [CNGlassButtonGroup].
+class CNButtonDataPopupItem {
+  /// Creates a popup menu item with a [label] and optional [sfSymbol] icon.
+  const CNButtonDataPopupItem({required this.label, this.sfSymbol});
+
+  /// The text label displayed in the popup menu.
+  final String label;
+
+  /// Optional SF Symbol name for the menu item icon.
+  final String? sfSymbol;
+}
+
 /// Data model for button configuration in CNGlassButtonGroup.
 ///
 /// This class holds all the properties needed to render a button without
@@ -45,7 +57,9 @@ class CNButtonData {
     this.tint,
     this.config = const CNButtonDataConfig(),
   }) : badgeCount = null,
-       isIcon = false;
+       isIcon = false,
+       popupItems = null,
+       onMenuSelected = null;
 
   /// Creates an icon-only button data model.
   const CNButtonData.icon({
@@ -58,7 +72,27 @@ class CNButtonData {
     this.badgeCount,
     this.config = const CNButtonDataConfig(),
   }) : label = null,
-       isIcon = true;
+       isIcon = true,
+       popupItems = null,
+       onMenuSelected = null;
+
+  /// Creates an icon-only popup menu button.
+  ///
+  /// When [popupItems] is non-empty, tapping the button shows a native menu.
+  /// [onMenuSelected] is called with the index of the selected item.
+  const CNButtonData.popup({
+    this.icon,
+    this.customIcon,
+    this.imageAsset,
+    required this.popupItems,
+    required this.onMenuSelected,
+    this.enabled = true,
+    this.tint,
+    this.config = const CNButtonDataConfig(),
+  }) : label = null,
+       isIcon = true,
+       badgeCount = null,
+       onPressed = null;
 
   /// The text label for the button. Null for icon-only buttons.
   final String? label;
@@ -91,6 +125,16 @@ class CNButtonData {
   /// Whether this is an icon-only button.
   final bool isIcon;
 
+  /// Menu items for popup buttons. When non-null and non-empty, this is a popup button.
+  final List<CNButtonDataPopupItem>? popupItems;
+
+  /// Callback when a popup menu item is selected. Receives the selected index.
+  final ValueChanged<int>? onMenuSelected;
+
+  /// Whether this is a popup menu button.
+  bool get isPopup =>
+      popupItems != null && popupItems!.isNotEmpty && onMenuSelected != null;
+
   /// Creates a copy of this data with the given fields replaced.
   CNButtonData copyWith({
     String? label,
@@ -102,7 +146,21 @@ class CNButtonData {
     Color? tint,
     int? badgeCount,
     CNButtonDataConfig? config,
+    List<CNButtonDataPopupItem>? popupItems,
+    ValueChanged<int>? onMenuSelected,
   }) {
+    if (isPopup) {
+      return CNButtonData.popup(
+        icon: icon ?? this.icon,
+        customIcon: customIcon ?? this.customIcon,
+        imageAsset: imageAsset ?? this.imageAsset,
+        popupItems: popupItems ?? this.popupItems!,
+        onMenuSelected: onMenuSelected ?? this.onMenuSelected!,
+        enabled: enabled ?? this.enabled,
+        tint: tint ?? this.tint,
+        config: config ?? this.config,
+      );
+    }
     if (isIcon) {
       return CNButtonData.icon(
         icon: icon ?? this.icon,

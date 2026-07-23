@@ -20,6 +20,7 @@ import '../utils/icon_renderer.dart';
 import '../utils/theme_helper.dart';
 import '../utils/version_detector.dart';
 import 'icon.dart';
+import 'tab_bar.dart' show CNTabBarRouteObserver;
 
 /// Configuration for CNButton with default values.
 class CNButtonConfig {
@@ -99,6 +100,32 @@ class CNButtonConfig {
   /// Defaults to true.
   final bool interaction;
 
+  /// Optional custom font family for the button label.
+  ///
+  /// The font must be registered in the app's `Info.plist` (iOS) or as
+  /// a Flutter font asset. When null, the system default for the
+  /// selected [style] is used.
+  final String? labelFontFamily;
+
+  /// Optional font size (in points) for the button label.
+  ///
+  /// When null, the system default for the selected [style] is used
+  /// (typically 17pt body font on iOS).
+  final double? labelFontSize;
+
+  /// Optional explicit color for the button label.
+  ///
+  /// When null, the label uses the configuration's natural foreground
+  /// (driven by [CNButton.tint] for non-filled styles, or the system
+  /// foreground for filled / borderedProminent / prominentGlass).
+  /// Set this to override that decision.
+  final Color? labelColor;
+
+  /// Optional weight for the button label.
+  ///
+  /// When null, uses the system default weight for the selected [style].
+  final FontWeight? labelFontWeight;
+
   /// Creates a configuration for [CNButton].
   const CNButtonConfig({
     this.padding,
@@ -115,6 +142,10 @@ class CNButtonConfig {
     this.maxLines = 1,
     this.customIconSize,
     this.interaction = true,
+    this.labelFontFamily,
+    this.labelFontSize,
+    this.labelColor,
+    this.labelFontWeight,
   });
 }
 
@@ -230,8 +261,23 @@ class _CNButtonState extends State<CNButton> {
   IconData? _lastCustomIcon;
   int? _lastBadgeCount;
   bool? _lastInteraction;
+  String? _lastLabelFontFamily;
+  double? _lastLabelFontSize;
+  int? _lastLabelColor;
+  int? _lastLabelFontWeight;
   Offset? _downPosition;
   bool _pressed = false;
+
+  // Issue #29: while the enclosing route is animating in/out OR while
+  // any modal/sheet/popup/dialog is presented over it, toggle native-
+  // side halo containment (container + button clipsToBounds + shadow/
+  // background clearing) so the iOS 26 Liquid Glass capsule can't leak
+  // outside the platform view's bounds through the sheet's top edge or
+  // through the incoming/outgoing page snapshot. At rest (no transition,
+  // no modal) the containment is OFF so the capsule can render its full
+  // soft-edge glow and grow with a stretched parent frame.
+  Animation<double>? _secondaryRouteAnim;
+  bool _modalAbove = false;
 
   bool get _isDark => ThemeHelper.isDark(context);
 
@@ -239,7 +285,17 @@ class _CNButtonState extends State<CNButton> {
       widget.tint ?? ThemeHelper.getPrimaryColor(context);
 
   @override
+  void initState() {
+    super.initState();
+    CNTabBarRouteObserver.anyModalDepth.addListener(_onAnyModalDepthChanged);
+    _onAnyModalDepthChanged();
+  }
+
+  @override
   void dispose() {
+    _secondaryRouteAnim?.removeListener(_onSecondaryRouteAnimChanged);
+    _secondaryRouteAnim = null;
+    CNTabBarRouteObserver.anyModalDepth.removeListener(_onAnyModalDepthChanged);
     _channel?.setMethodCallHandler(null);
     super.dispose();
   }
@@ -253,8 +309,53 @@ class _CNButtonState extends State<CNButton> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _attachSecondaryRouteAnim();
     _syncBrightnessIfNeeded();
     _syncPropsToNativeIfNeeded();
+  }
+
+  void _attachSecondaryRouteAnim() {
+    final route = ModalRoute.of(context);
+    final newAnim = route?.secondaryAnimation;
+    if (identical(newAnim, _secondaryRouteAnim)) return;
+    _secondaryRouteAnim?.removeListener(_onSecondaryRouteAnimChanged);
+    _secondaryRouteAnim = newAnim;
+    _secondaryRouteAnim?.addListener(_onSecondaryRouteAnimChanged);
+    _onSecondaryRouteAnimChanged();
+  }
+
+  void _onSecondaryRouteAnimChanged() {
+    final anim = _secondaryRouteAnim;
+    if (anim == null) return;
+    final isAnimating =
+        anim.status == AnimationStatus.forward ||
+        anim.status == AnimationStatus.reverse;
+    _pushContainmentIfNeeded(animating: isAnimating, modalAbove: _modalAbove);
+  }
+
+  void _onAnyModalDepthChanged() {
+    final above = CNTabBarRouteObserver.anyModalDepth.value > 0;
+    _pushContainmentIfNeeded(
+      animating:
+          _secondaryRouteAnim?.status == AnimationStatus.forward ||
+          _secondaryRouteAnim?.status == AnimationStatus.reverse,
+      modalAbove: above,
+    );
+  }
+
+  void _pushContainmentIfNeeded({
+    required bool animating,
+    required bool modalAbove,
+  }) {
+    final next = animating || modalAbove;
+    _modalAbove = modalAbove;
+    final ch = _channel;
+    if (ch == null) return;
+    try {
+      ch.invokeMethod('setTransitioning', {'active': next});
+    } catch (_) {
+      // MissingPluginException during hot reload / view recreation — ignore.
+    }
   }
 
   @override
@@ -450,6 +551,14 @@ class _CNButtonState extends State<CNButton> {
       'glassEffectInteractive': widget.config.glassEffectInteractive,
       if (widget.badgeCount != null) 'badgeCount': widget.badgeCount,
       'interaction': widget.config.interaction,
+      if (widget.config.labelFontFamily != null)
+        'labelFontFamily': widget.config.labelFontFamily,
+      if (widget.config.labelFontSize != null)
+        'labelFontSize': widget.config.labelFontSize,
+      if (widget.config.labelColor != null)
+        'labelColor': resolveColorToArgb(widget.config.labelColor!, context),
+      if (widget.config.labelFontWeight != null)
+        'labelFontWeight': widget.config.labelFontWeight!.value,
     };
 
     final platformView = defaultTargetPlatform == TargetPlatform.iOS
@@ -591,6 +700,12 @@ class _CNButtonState extends State<CNButton> {
     _lastCustomIcon = widget.customIcon;
     _lastBadgeCount = widget.badgeCount;
     _lastInteraction = widget.config.interaction;
+    _lastLabelFontFamily = widget.config.labelFontFamily;
+    _lastLabelFontSize = widget.config.labelFontSize;
+    _lastLabelColor = widget.config.labelColor != null
+        ? resolveColorToArgb(widget.config.labelColor!, context)
+        : null;
+    _lastLabelFontWeight = widget.config.labelFontWeight?.value;
     // Always request intrinsic size to get both width and height
     // Use a small delay to ensure native view has finished layout
     Future.delayed(const Duration(milliseconds: 10), () {
@@ -641,6 +756,10 @@ class _CNButtonState extends State<CNButton> {
       widget.imageAsset?.color,
       context,
     );
+    final labelColorArgb = widget.config.labelColor != null
+        ? resolveColorToArgb(widget.config.labelColor!, context)
+        : null;
+    final labelWeight = widget.config.labelFontWeight?.value;
 
     if (_lastTint != tint && tint != null) {
       await ch.invokeMethod('setStyle', {'tint': tint});
@@ -692,6 +811,31 @@ class _CNButtonState extends State<CNButton> {
       // This is a limitation - in a production app, you might want to handle this differently
       _requestIntrinsicSize();
       _lastPadding = widget.config.padding;
+    }
+
+    // Sync label style (Issue #40): font family / size / color / weight.
+    if (_lastLabelFontFamily != widget.config.labelFontFamily ||
+        _lastLabelFontSize != widget.config.labelFontSize ||
+        _lastLabelColor != labelColorArgb ||
+        _lastLabelFontWeight != labelWeight) {
+      await ch.invokeMethod('setLabelStyle', {
+        if (widget.config.labelFontFamily != null)
+          'labelFontFamily': widget.config.labelFontFamily,
+        if (widget.config.labelFontSize != null)
+          'labelFontSize': widget.config.labelFontSize,
+        if (labelColorArgb != null) 'labelColor': labelColorArgb,
+        if (labelWeight != null) 'labelFontWeight': labelWeight,
+        // Always include "clear" markers so native can reset removed values.
+        'clearFontFamily': widget.config.labelFontFamily == null,
+        'clearFontSize': widget.config.labelFontSize == null,
+        'clearLabelColor': labelColorArgb == null,
+        'clearFontWeight': labelWeight == null,
+      });
+      _lastLabelFontFamily = widget.config.labelFontFamily;
+      _lastLabelFontSize = widget.config.labelFontSize;
+      _lastLabelColor = labelColorArgb;
+      _lastLabelFontWeight = labelWeight;
+      _requestIntrinsicSize();
     }
 
     // Sync icon properties if icon is present (works for both icon-only and label+icon buttons)

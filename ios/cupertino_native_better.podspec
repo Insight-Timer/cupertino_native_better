@@ -13,7 +13,7 @@ Native Liquid Glass widgets for iOS and macOS in Flutter with pixel-perfect fide
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'Narek Manukyan' => 'narek.manukyan.2031@gmail.com' }
   s.source           = { :path => '.' }
-  s.source_files = 'Classes/**/*'
+  s.source_files = 'cupertino_native_better/Sources/cupertino_native_better/**/*'
   s.dependency 'Flutter'
   s.dependency 'SVGKit', '~> 3.0'
   s.platform = :ios, '15.0'
@@ -26,5 +26,5 @@ Native Liquid Glass widgets for iOS and macOS in Flutter with pixel-perfect fide
   # required reason APIs, update the PrivacyInfo.xcprivacy file to describe your
   # plugin's privacy impact, and then uncomment this line. For more information,
   # see https://developer.apple.com/documentation/bundleresources/privacy_manifest_files
-  # s.resource_bundles = {'cupertino_native_plus_privacy' => ['Resources/PrivacyInfo.xcprivacy']}
+  # s.resource_bundles = {'cupertino_native_better_privacy' => ['cupertino_native_better/Sources/cupertino_native_better/PrivacyInfo.xcprivacy']}
 end

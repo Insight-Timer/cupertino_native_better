@@ -10,6 +10,7 @@ import '../utils/icon_renderer.dart';
 import '../utils/theme_helper.dart';
 import '../utils/version_detector.dart';
 import 'icon.dart';
+import 'tab_bar.dart' show CNTabBarRouteObserver;
 
 /// Base type for entries in a [CNPopupMenuButton] menu.
 abstract class CNPopupMenuEntry {
@@ -27,6 +28,7 @@ class CNPopupMenuItem extends CNPopupMenuEntry {
     this.imageAsset,
     this.iconColor,
     this.enabled = true,
+    this.checked = false,
   });
 
   /// Display label for the item.
@@ -50,6 +52,9 @@ class CNPopupMenuItem extends CNPopupMenuEntry {
 
   /// Whether the item can be selected.
   final bool enabled;
+
+  /// Whether the item shows a checkmark (selected/active state).
+  final bool checked;
 }
 
 /// A visual divider between popup menu items.
@@ -77,6 +82,7 @@ class CNPopupMenuButton extends StatefulWidget {
     this.preserveTopToBottomOrder = false,
   }) : buttonIcon = null,
        buttonCustomIcon = null,
+       buttonCustomIconColor = null,
        buttonImageAsset = null,
        width = null,
        round = false;
@@ -86,6 +92,7 @@ class CNPopupMenuButton extends StatefulWidget {
     super.key,
     this.buttonIcon,
     this.buttonCustomIcon,
+    this.buttonCustomIconColor,
     this.buttonImageAsset,
     required this.items,
     required this.onSelected,
@@ -115,6 +122,13 @@ class CNPopupMenuButton extends StatefulWidget {
   /// Optional custom icon from CupertinoIcons, Icons, or any IconData for the button.
   /// If provided, this takes precedence over [buttonIcon] but not [buttonImageAsset].
   final IconData? buttonCustomIcon;
+
+  /// Optional color for the [buttonCustomIcon].
+  ///
+  /// When provided, the custom icon is rendered with this color.
+  /// Defaults to white when not specified (suitable for glass-style buttons).
+  /// Has no effect on [buttonIcon] (SF Symbol) or [buttonImageAsset].
+  final Color? buttonCustomIconColor;
 
   /// Optional image asset (SVG, PNG, etc.) for the button icon.
   /// If provided, this takes precedence over [buttonIcon] and [buttonCustomIcon].
@@ -173,9 +187,21 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
   Offset? _downPosition;
   bool _pressed = false;
 
+  // Issue #29 halo containment: clip native view while enclosing route is
+  // animating OR while any modal/sheet/popup is above it.
+  Animation<double>? _secondaryRouteAnim;
+  bool _modalAbove = false;
+
   bool get _isDark => ThemeHelper.isDark(context);
   Color? get _effectiveTint =>
       widget.tint ?? ThemeHelper.getPrimaryColor(context);
+
+  @override
+  void initState() {
+    super.initState();
+    CNTabBarRouteObserver.anyModalDepth.addListener(_onAnyModalDepthChanged);
+    _onAnyModalDepthChanged();
+  }
 
   @override
   void didUpdateWidget(covariant CNPopupMenuButton oldWidget) {
@@ -186,13 +212,49 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _attachSecondaryRouteAnim();
     _syncBrightnessIfNeeded();
   }
 
   @override
   void dispose() {
+    _secondaryRouteAnim?.removeListener(_onSecondaryRouteAnimChanged);
+    _secondaryRouteAnim = null;
+    CNTabBarRouteObserver.anyModalDepth.removeListener(_onAnyModalDepthChanged);
     _channel?.setMethodCallHandler(null);
     super.dispose();
+  }
+
+  void _attachSecondaryRouteAnim() {
+    final route = ModalRoute.of(context);
+    final newAnim = route?.secondaryAnimation;
+    if (identical(newAnim, _secondaryRouteAnim)) return;
+    _secondaryRouteAnim?.removeListener(_onSecondaryRouteAnimChanged);
+    _secondaryRouteAnim = newAnim;
+    _secondaryRouteAnim?.addListener(_onSecondaryRouteAnimChanged);
+    _onSecondaryRouteAnimChanged();
+  }
+
+  void _onSecondaryRouteAnimChanged() {
+    _pushContainmentIfNeeded();
+  }
+
+  void _onAnyModalDepthChanged() {
+    _modalAbove = CNTabBarRouteObserver.anyModalDepth.value > 0;
+    _pushContainmentIfNeeded();
+  }
+
+  void _pushContainmentIfNeeded() {
+    final anim = _secondaryRouteAnim;
+    final animating =
+        anim?.status == AnimationStatus.forward ||
+        anim?.status == AnimationStatus.reverse;
+    final active = animating || _modalAbove;
+    final ch = _channel;
+    if (ch == null) return;
+    try {
+      ch.invokeMethod('setTransitioning', {'active': active});
+    } catch (_) {}
   }
 
   @override
@@ -228,11 +290,11 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
         hasMenuImageAssets) {
       // Create a key that changes when button or menu icons change
       final buttonIconKey =
-          '${widget.buttonImageAsset?.assetPath}_${widget.buttonImageAsset?.imageData?.length ?? 0}_${widget.buttonCustomIcon?.hashCode ?? 0}';
+          '${widget.buttonImageAsset?.assetPath}_${widget.buttonImageAsset?.imageData?.length ?? 0}_${widget.buttonCustomIcon?.hashCode ?? 0}_${widget.buttonCustomIconColor?.toARGB32() ?? 0}';
       final menuIconsKey = widget.items
           .map((e) {
             if (e is CNPopupMenuItem) {
-              return '${e.imageAsset?.assetPath}_${e.imageAsset?.imageData?.length ?? 0}_${e.customIcon?.hashCode ?? 0}';
+              return '${e.imageAsset?.assetPath}_${e.imageAsset?.imageData?.length ?? 0}_${e.customIcon?.hashCode ?? 0}_${e.iconColor?.toARGB32() ?? 0}';
             }
             return '';
           })
@@ -283,6 +345,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
       buttonIconBytes = await iconDataToImageBytes(
         widget.buttonCustomIcon!,
         size: widget.buttonIcon?.size ?? 20.0,
+        color: widget.buttonCustomIconColor ?? CupertinoColors.white,
       );
     }
 
@@ -298,6 +361,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
           final bytes = await iconDataToImageBytes(
             e.customIcon!,
             size: e.icon?.size ?? 20.0,
+            color: e.iconColor ?? CupertinoColors.label,
           );
           menuIconBytes.add(bytes);
         } else {
@@ -319,7 +383,9 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
     final capturedIsDark = _isDark;
     final capturedStyle = encodeStyle(context, tint: _effectiveTint);
     final capturedButtonIconColor = resolveColorToArgb(
-      widget.buttonImageAsset?.color ?? widget.buttonIcon?.color,
+      widget.buttonImageAsset?.color ??
+          widget.buttonCustomIconColor ??
+          widget.buttonIcon?.color,
       context,
     );
     final capturedButtonPaletteColors = widget.buttonIcon?.paletteColors
@@ -387,6 +453,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
     final imageAssetFormats = <String>[];
     final isDivider = <bool>[];
     final enabled = <bool>[];
+    final checked = <bool>[];
     final sizes = <double?>[];
     final colors = <int?>[];
     final modes = <String?>[];
@@ -406,6 +473,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
         imageAssetFormats.add('');
         isDivider.add(true);
         enabled.add(false);
+        checked.add(false);
         sizes.add(null);
         colors.add(null);
         modes.add(null);
@@ -441,6 +509,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
 
         isDivider.add(false);
         enabled.add(e.enabled);
+        checked.add(e.checked);
         sizes.add(e.imageAsset?.size ?? e.icon?.size);
         colors.add(capturedMenuItemColors[i]);
         modes.add(e.imageAsset?.mode?.name ?? e.icon?.mode?.name);
@@ -483,6 +552,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
       'imageAssetFormats': imageAssetFormats,
       'isDivider': isDivider,
       'enabled': enabled,
+      'checked': checked,
       'sfSymbolSizes': sizes,
       'sfSymbolColors': colors,
       'sfSymbolRenderingModes': modes,
@@ -518,6 +588,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
       '${widget.height}_'
       '${widget.width}_'
       '${widget.tint?.toARGB32()}_'
+      '${widget.buttonCustomIconColor?.toARGB32()}_'
       '$_isDark',
     );
 
@@ -634,6 +705,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
     final updSymbols = <String>[];
     final updIsDivider = <bool>[];
     final updEnabled = <bool>[];
+    final updChecked = <bool>[];
     final updSizes = <double?>[];
     final updColors = <int?>[];
     final updModes = <String?>[];
@@ -648,6 +720,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
         updSymbols.add('');
         updIsDivider.add(true);
         updEnabled.add(false);
+        updChecked.add(false);
         updSizes.add(null);
         updColors.add(null);
         updModes.add(null);
@@ -661,6 +734,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
         updSymbols.add(e.icon?.name ?? '');
         updIsDivider.add(false);
         updEnabled.add(e.enabled);
+        updChecked.add(e.checked);
         updSizes.add(e.imageAsset?.size ?? e.icon?.size);
         updColors.add(
           resolveColorToArgb(e.imageAsset?.color ?? e.icon?.color, context),
@@ -789,6 +863,7 @@ class _CNPopupMenuButtonState extends State<CNPopupMenuButton> {
       'sfSymbols': updSymbols,
       'isDivider': updIsDivider,
       'enabled': updEnabled,
+      'checked': updChecked,
       'sfSymbolSizes': updSizes,
       'sfSymbolColors': updColors,
       'sfSymbolRenderingModes': updModes,
