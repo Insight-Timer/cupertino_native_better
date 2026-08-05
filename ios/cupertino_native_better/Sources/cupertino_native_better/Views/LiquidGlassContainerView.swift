@@ -1,292 +1,170 @@
 import Flutter
 import UIKit
-import SwiftUI
 
+/// Renders the glass with UIKit's own `UIGlassEffect` inside a `UIVisualEffectView`.
+///
+/// This used to host a SwiftUI `Capsule().glassEffect(...)` in a `UIHostingController`. The material was
+/// right, but a hosting controller runs SwiftUI's layout pass inside the Flutter-hosted view, and the
+/// `GeometryReader` the body needed re-evaluated whenever geometry was read — so scrolling content behind
+/// the glass drove that work every frame, on the platform thread. `CupertinoTabBarPlatformView` never had
+/// the problem because it is plain UIKit (a real `UITabBar`), which is what pointed at the hosting
+/// controller rather than at the glass. `UIVisualEffectView` composites the same material with no SwiftUI
+/// in the path.
 @available(iOS 26.0, *)
 class LiquidGlassContainerPlatformView: NSObject, FlutterPlatformView {
   private let container: CNLiquidGlassHostView
-  private var hostingController: UIHostingController<LiquidGlassContainerSwiftUI>
   private let channel: FlutterMethodChannel
-
-  // Stored shape config so `applyTransitionContainment` can clip the
-  // container's layer to the same rounded shape the SwiftUI glass uses.
-  // Without this we clip to the rectangular layer bounds and the layer's
-  // drop shadow leaks past the rounded corners — visible behind a modal
-  // scrim as four square shadow nubs at the corners (Issue #36).
-  private var configuredShape: String = "capsule"
-  private var configuredCornerRadius: CGFloat? = nil
 
   init(frame: CGRect, viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativeLiquidGlassContainer_\(viewId)", binaryMessenger: messenger)
     self.container = CNLiquidGlassHostView(frame: frame)
-    self.container.backgroundColor = .clear
-    
-    // Parse arguments
-    var effect: String = "regular"
-    var shape: String = "capsule"
-    var cornerRadius: CGFloat? = nil
-    var tint: UIColor? = nil
-    var interactive: Bool = false
-    var isDark: Bool = false
-    
-    if let dict = args as? [String: Any] {
-      if let effectStr = dict["effect"] as? String {
-        effect = effectStr
-      }
-      if let shapeStr = dict["shape"] as? String {
-        shape = shapeStr
-      }
-      if let radius = dict["cornerRadius"] as? CGFloat {
-        cornerRadius = radius
-      }
-      if let tintInt = dict["tint"] as? Int {
-        tint = UIColor(
-          red: CGFloat((tintInt >> 16) & 0xFF) / 255.0,
-          green: CGFloat((tintInt >> 8) & 0xFF) / 255.0,
-          blue: CGFloat(tintInt & 0xFF) / 255.0,
-          alpha: CGFloat((tintInt >> 24) & 0xFF) / 255.0
-        )
-      }
-      if let interactiveBool = dict["interactive"] as? Bool {
-        interactive = interactiveBool
-      }
-      if let isDarkBool = dict["isDark"] as? Bool {
-        isDark = isDarkBool
-      }
-    }
-    
-    // Create SwiftUI view
-    let glassView = LiquidGlassContainerSwiftUI(
-      effect: effect,
-      shape: shape,
-      cornerRadius: cornerRadius,
-      tint: tint,
-      interactive: interactive
-    )
-
-    self.hostingController = UIHostingController(rootView: glassView)
-    self.hostingController.view.backgroundColor = .clear
-    // UIHostingController insets its SwiftUI content for safe-area regions by default. When this
-    // glass sits inside the bottom safe area (e.g. a nav bar positioned low on screen), that inset
-    // shrinks the rendered capsule so it no longer fills its Flutter-given frame. Disable it so the
-    // glass always fills its frame regardless of where on screen it sits. (iOS 16.4+; class is iOS 26+.)
-    if #available(iOS 16.4, *) {
-      self.hostingController.safeAreaRegions = []
-    }
-    self.hostingController.overrideUserInterfaceStyle = isDark ? .dark : .light
-
     super.init()
-    self.configuredShape = shape
-    self.configuredCornerRadius = cornerRadius
 
-    container.onDidMoveToWindow = { [weak self] window in
-      guard window != nil else { return }
-      self?.refreshGlass()
-    }
+    container.apply(Self.parse(args))
 
-    // Sync Flutter's brightness mode with Swift at initialization
-    if #available(iOS 13.0, *) {
-      self.hostingController.overrideUserInterfaceStyle = isDark ? .dark : .light
-    }
-    
-    // Add hosting controller as child
-    container.addSubview(hostingController.view)
-    hostingController.view.translatesAutoresizingMaskIntoConstraints = false
-    NSLayoutConstraint.activate([
-      hostingController.view.topAnchor.constraint(equalTo: container.topAnchor),
-      hostingController.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-      hostingController.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-      hostingController.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-    ])
-
-    DispatchQueue.main.async { [weak self] in
-      self?.refreshGlass()
-    }
-    
-    // Set up method channel handler
     channel.setMethodCallHandler { [weak self] (call, result) in
-      if call.method == "updateConfig" {
-        self?.updateConfig(args: call.arguments)
+      guard let self = self else { result(nil); return }
+      switch call.method {
+      case "updateConfig":
+        self.container.apply(Self.parse(call.arguments))
         result(nil)
-      } else if call.method == "setTransitioning" {
+      case "setTransitioning":
         let active = ((call.arguments as? [String: Any])?["active"] as? NSNumber)?.boolValue ?? false
-        self?.applyTransitionContainment(active)
+        self.container.setTransitionContainment(active)
         result(nil)
-      } else if call.method == "setInteractive" {
+      case "setInteractive":
         if let args = call.arguments as? [String: Any],
            let interactive = (args["interactive"] as? NSNumber)?.boolValue {
-          NSLog("[CN Glass] setInteractive=\(interactive)")
-          self?._cnSetInteractiveRecursive(self?.container, interactive)
-          self?._cnSetInteractiveRecursive(self?.hostingController.view, interactive)
+          self.container.setInteractive(interactive)
         }
         result(nil)
-      } else {
+      default:
         result(FlutterMethodNotImplemented)
       }
     }
   }
 
-  /// Toggle Issue #29 / #36 halo containment on container + hosting view.
-  /// Clips with the same rounded shape the SwiftUI glass uses so the
-  /// layer's drop shadow doesn't leak past the rounded corners and show
-  /// up as four square shadow nubs behind a modal scrim.
-  private func applyTransitionContainment(_ active: Bool) {
-    if active {
-      let radius = roundedCornerRadiusForCurrentShape()
-      container.isOpaque = false
-      container.clipsToBounds = true
-      container.layer.cornerRadius = radius
-      container.layer.backgroundColor = UIColor.clear.cgColor
-      container.layer.shadowOpacity = 0
-      hostingController.view.clipsToBounds = true
-      hostingController.view.layer.cornerRadius = radius
-      hostingController.view.isOpaque = false
-      hostingController.view.layer.backgroundColor = UIColor.clear.cgColor
-      hostingController.view.layer.shadowOpacity = 0
-    } else {
-      container.clipsToBounds = false
-      container.layer.cornerRadius = 0
-      hostingController.view.clipsToBounds = false
-      hostingController.view.layer.cornerRadius = 0
-    }
-  }
-
-  private func roundedCornerRadiusForCurrentShape() -> CGFloat {
-    let bounds = container.bounds
-    switch configuredShape {
-    case "circle":
-      return min(bounds.width, bounds.height) / 2.0
-    case "rect":
-      return configuredCornerRadius ?? 0
-    default:
-      // Capsule — half of the shorter side gives the iOS pill shape.
-      return min(bounds.width, bounds.height) / 2.0
-    }
-  }
-  
-  private func updateConfig(args: Any?) {
-    guard let dict = args as? [String: Any] else { return }
-    
-    var effect: String = "regular"
-    var shape: String = "capsule"
-    var cornerRadius: CGFloat? = nil
-    var tint: UIColor? = nil
-    var interactive: Bool = false
-    var isDark: Bool = false
-    
-    if let effectStr = dict["effect"] as? String {
-      effect = effectStr
-    }
-    if let shapeStr = dict["shape"] as? String {
-      shape = shapeStr
-    }
-    if let radius = dict["cornerRadius"] as? CGFloat {
-      cornerRadius = radius
-    }
-    if let tintInt = dict["tint"] as? Int {
-      tint = UIColor(
-        red: CGFloat((tintInt >> 16) & 0xFF) / 255.0,
-        green: CGFloat((tintInt >> 8) & 0xFF) / 255.0,
-        blue: CGFloat(tintInt & 0xFF) / 255.0,
-        alpha: CGFloat((tintInt >> 24) & 0xFF) / 255.0
-      )
-    }
-    if let interactiveBool = dict["interactive"] as? Bool {
-      interactive = interactiveBool
-    }
-    if let isDarkBool = dict["isDark"] as? Bool {
-      isDark = isDarkBool
-    }
-    
-    // Update the SwiftUI view
-    let newGlassView = LiquidGlassContainerSwiftUI(
-      effect: effect,
-      shape: shape,
-      cornerRadius: cornerRadius,
-      tint: tint,
-      interactive: interactive
-    )
-
-    hostingController.rootView = newGlassView
-    hostingController.overrideUserInterfaceStyle = isDark ? .dark : .light
-    // Keep stored config in sync for `applyTransitionContainment`.
-    self.configuredShape = shape
-    self.configuredCornerRadius = cornerRadius
-    refreshGlass()
-  }
-
-  private func refreshGlass() {
-    hostingController.rootView = hostingController.rootView
-    container.setNeedsLayout()
-    hostingController.view.setNeedsLayout()
-    container.layoutIfNeeded()
-    hostingController.view.layoutIfNeeded()
-  }
-  
   func view() -> UIView {
     return container
   }
 
-  private func _cnSetInteractiveRecursive(_ view: UIView?, _ interactive: Bool) {
-    guard let view = view else { return }
-    view.isUserInteractionEnabled = interactive
-    for sub in view.subviews { _cnSetInteractiveRecursive(sub, interactive) }
+  /// Same argument contract as the Dart side has always sent.
+  private static func parse(_ args: Any?) -> CNLiquidGlassConfig {
+    var config = CNLiquidGlassConfig()
+    guard let dict = args as? [String: Any] else { return config }
+    if let effect = dict["effect"] as? String { config.effect = effect }
+    if let shape = dict["shape"] as? String { config.shape = shape }
+    if let radius = dict["cornerRadius"] as? CGFloat { config.cornerRadius = radius }
+    if let tint = dict["tint"] as? Int {
+      config.tint = UIColor(
+        red: CGFloat((tint >> 16) & 0xFF) / 255.0,
+        green: CGFloat((tint >> 8) & 0xFF) / 255.0,
+        blue: CGFloat(tint & 0xFF) / 255.0,
+        alpha: CGFloat((tint >> 24) & 0xFF) / 255.0
+      )
+    }
+    if let interactive = dict["interactive"] as? Bool { config.interactive = interactive }
+    if let isDark = dict["isDark"] as? Bool { config.isDark = isDark }
+    return config
   }
 }
 
+/// The parsed `LiquidGlassConfig` from Dart.
 @available(iOS 26.0, *)
-struct LiquidGlassContainerSwiftUI: View {
-  let effect: String
-  let shape: String
-  let cornerRadius: CGFloat?
-  let tint: UIColor?
-  let interactive: Bool
+private struct CNLiquidGlassConfig {
+  var effect: String = "regular"
+  var shape: String = "capsule"
+  var cornerRadius: CGFloat? = nil
+  var tint: UIColor? = nil
+  var interactive: Bool = false
+  var isDark: Bool = false
+}
 
-  var body: some View {
-    GeometryReader { geometry in
-      shapeForConfig()
-        .fill(Color.clear)
-        .contentShape(shapeForConfig())
-        .allowsHitTesting(false)  // Always false - let Flutter handle gestures
-        .glassEffect(glassEffectForConfig(), in: shapeForConfig())
-        .frame(width: geometry.size.width, height: geometry.size.height)
-    }
-    // Belt-and-suspenders with the hosting controller's safeAreaRegions = []: never inset the
-    // glass for the safe area, so it fills its frame even when positioned in the bottom safe area.
-    .ignoresSafeArea()
+/// Hosts the effect view and keeps its corner radius in step with the shape, which for a capsule depends
+/// on the bounds Flutter gives us and so has to be resolved on every layout.
+@available(iOS 26.0, *)
+private final class CNLiquidGlassHostView: UIView {
+  private let effectView = UIVisualEffectView()
+  private var config = CNLiquidGlassConfig()
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    backgroundColor = .clear
+    isOpaque = false
+    layer.cornerCurve = .continuous
+    // Flutter owns the gestures; the glass is decoration. `setInteractive` can hand it back.
+    isUserInteractionEnabled = false
+    effectView.isUserInteractionEnabled = false
+    effectView.clipsToBounds = true
+    effectView.layer.cornerCurve = .continuous
+    effectView.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(effectView)
+    NSLayoutConstraint.activate([
+      effectView.topAnchor.constraint(equalTo: topAnchor),
+      effectView.leadingAnchor.constraint(equalTo: leadingAnchor),
+      effectView.trailingAnchor.constraint(equalTo: trailingAnchor),
+      effectView.bottomAnchor.constraint(equalTo: bottomAnchor),
+    ])
   }
-  
-  private func glassEffectForConfig() -> Glass {
-    var glass: Glass
-    switch effect {
-    case "clear":
-      glass = Glass.clear
-    default:
-      glass = Glass.regular
-    }
 
-    if let tintColor = tint {
-      glass = glass.tint(Color(tintColor))
-    }
-
-    if interactive {
-      glass = glass.interactive()
-    }
-
-    return glass
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
   }
-  
-  private func shapeForConfig() -> some Shape {
-    switch shape {
+
+  /// The effect is re-applied once there is a window. Upstream did the same (`onDidMoveToWindow` plus a
+  /// deferred refresh) because the glass could come up unrendered on the first frame otherwise; it costs
+  /// one effect assignment per attach.
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    guard window != nil else { return }
+    apply(config)
+  }
+
+  func apply(_ config: CNLiquidGlassConfig) {
+    self.config = config
+
+    let glass = UIGlassEffect(style: config.effect == "clear" ? .clear : .regular)
+    glass.tintColor = config.tint
+    glass.isInteractive = config.interactive
+    effectView.effect = glass
+
+    // Follow the app theme rather than the device, so the forced-dark Timer tab renders a dark bar.
+    effectView.overrideUserInterfaceStyle = config.isDark ? .dark : .light
+
+    setNeedsLayout()
+  }
+
+  func setInteractive(_ interactive: Bool) {
+    isUserInteractionEnabled = interactive
+    effectView.isUserInteractionEnabled = interactive
+  }
+
+  /// Clips to the glass's own shape while a Flutter modal is up, so the layer's shadow cannot leak past
+  /// the rounded corners and show as square nubs behind the scrim (upstream issues #29 / #36).
+  func setTransitionContainment(_ active: Bool) {
+    clipsToBounds = active
+    layer.cornerRadius = active ? cornerRadiusForShape() : 0
+    if active {
+      layer.backgroundColor = UIColor.clear.cgColor
+      layer.shadowOpacity = 0
+    }
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    effectView.layer.cornerRadius = cornerRadiusForShape()
+    if clipsToBounds { layer.cornerRadius = cornerRadiusForShape() }
+  }
+
+  private func cornerRadiusForShape() -> CGFloat {
+    switch config.shape {
     case "rect":
-      if let radius = cornerRadius {
-        return AnyShape(RoundedRectangle(cornerRadius: radius))
-      }
-      return AnyShape(RoundedRectangle(cornerRadius: 0))
+      return config.cornerRadius ?? 0
     case "circle":
-      return AnyShape(Circle())
-    default: // capsule
-      return AnyShape(Capsule())
+      return min(bounds.width, bounds.height) / 2.0
+    default:
+      // Capsule — half the shorter side gives the iOS pill.
+      return min(bounds.width, bounds.height) / 2.0
     }
   }
 }
@@ -314,14 +192,5 @@ class FallbackLiquidGlassContainerView: NSObject, FlutterPlatformView {
 
   func view() -> UIView {
     return container
-  }
-}
-
-private final class CNLiquidGlassHostView: UIView {
-  var onDidMoveToWindow: ((UIWindow?) -> Void)?
-
-  override func didMoveToWindow() {
-    super.didMoveToWindow()
-    onDidMoveToWindow?(window)
   }
 }
