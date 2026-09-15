@@ -32,7 +32,7 @@ import 'demos/pr64_liquid_glass_safe_area_test.dart';
 import 'demos/pr66_glass_image_asset_tint_test.dart';
 import 'demos/pr67_icon_supersample_test.dart';
 import 'demos/pr69_glass_effect_test.dart';
-import 'demos/pr73_liquid_glass_parts_test.dart';
+import 'demos/pr77_liquid_glass_parts_test.dart';
 import 'demos/issue55_popup_menu_destructive_test.dart';
 import 'demos/pr42_tabbar_iconsize_customicon_test.dart';
 import 'demos/issue33_svg_tabbar_test.dart';
@@ -497,7 +497,7 @@ class HomePage extends StatelessWidget {
                 },
               ),
               CupertinoListTile(
-                title: Text('PR #73: LiquidGlass parts'),
+                title: Text('PR #77: LiquidGlass parts'),
                 leading: CNIcon(
                   symbol: CNSymbol('capsule.on.rectangle', color: accentColor),
                 ),
@@ -505,7 +505,7 @@ class HomePage extends StatelessWidget {
                 onTap: () {
                   Navigator.of(context).push(
                     CupertinoPageRoute(
-                      builder: (_) => const Pr73LiquidGlassPartsTestPage(),
+                      builder: (_) => const Pr77LiquidGlassPartsTestPage(),
                     ),
                   );
                 },

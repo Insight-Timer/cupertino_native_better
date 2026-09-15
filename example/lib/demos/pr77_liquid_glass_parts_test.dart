@@ -1,10 +1,10 @@
 import 'package:cupertino_native_better/cupertino_native_better.dart';
 import 'package:flutter/cupertino.dart';
 
-/// PR #73 verification — `LiquidGlassConfig.parts`: one glass effect shaped as several disjoint
+/// PR #77 verification — `LiquidGlassConfig.parts`: one glass effect shaped as several disjoint
 /// rounded rects.
 ///
-/// PR: https://github.com/gunumdogdu/cupertino_native_better/pull/73
+/// PR: https://github.com/gunumdogdu/cupertino_native_better/pull/77
 /// Reported by @johndavid92.
 ///
 /// ### The problem this solves
@@ -46,16 +46,18 @@ import 'package:flutter/cupertino.dart';
 ///    effect was given.
 ///  * `two views` — the circle is rimmed all the way round, but its shade no longer matches the wide
 ///    pill's.
-class Pr73LiquidGlassPartsTestPage extends StatefulWidget {
-  const Pr73LiquidGlassPartsTestPage({super.key});
+class Pr77LiquidGlassPartsTestPage extends StatefulWidget {
+  const Pr77LiquidGlassPartsTestPage({super.key});
 
   @override
-  State<Pr73LiquidGlassPartsTestPage> createState() => _Pr73LiquidGlassPartsTestPageState();
+  State<Pr77LiquidGlassPartsTestPage> createState() =>
+      _Pr77LiquidGlassPartsTestPageState();
 }
 
 enum _Mode { parts, clipped, twoViews }
 
-class _Pr73LiquidGlassPartsTestPageState extends State<Pr73LiquidGlassPartsTestPage> {
+class _Pr77LiquidGlassPartsTestPageState
+    extends State<Pr77LiquidGlassPartsTestPage> {
   static const double _barHeight = 64;
   static const double _gap = 10;
   static const double _circle = 64;
@@ -65,7 +67,9 @@ class _Pr73LiquidGlassPartsTestPageState extends State<Pr73LiquidGlassPartsTestP
   @override
   Widget build(BuildContext context) {
     return CupertinoPageScaffold(
-      navigationBar: const CupertinoNavigationBar(middle: Text('PR #73: LiquidGlass parts')),
+      navigationBar: const CupertinoNavigationBar(
+        middle: Text('PR #77: LiquidGlass parts'),
+      ),
       child: SafeArea(
         child: Column(
           children: <Widget>[
@@ -75,9 +79,18 @@ class _Pr73LiquidGlassPartsTestPageState extends State<Pr73LiquidGlassPartsTestP
                 groupValue: _mode,
                 onValueChanged: (_Mode value) => setState(() => _mode = value),
                 children: const <_Mode, Widget>{
-                  _Mode.parts: Padding(padding: EdgeInsets.symmetric(horizontal: 10), child: Text('parts')),
-                  _Mode.clipped: Padding(padding: EdgeInsets.symmetric(horizontal: 10), child: Text('clipped')),
-                  _Mode.twoViews: Padding(padding: EdgeInsets.symmetric(horizontal: 10), child: Text('two views')),
+                  _Mode.parts: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 10),
+                    child: Text('parts'),
+                  ),
+                  _Mode.clipped: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 10),
+                    child: Text('clipped'),
+                  ),
+                  _Mode.twoViews: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 10),
+                    child: Text('two views'),
+                  ),
                 },
               ),
             ),
@@ -85,7 +98,10 @@ class _Pr73LiquidGlassPartsTestPageState extends State<Pr73LiquidGlassPartsTestP
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Text(
                 _blurb,
-                style: const TextStyle(fontSize: 13, color: CupertinoColors.secondaryLabel),
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: CupertinoColors.secondaryLabel,
+                ),
               ),
             ),
             Expanded(
@@ -97,15 +113,24 @@ class _Pr73LiquidGlassPartsTestPageState extends State<Pr73LiquidGlassPartsTestP
                     Positioned.fill(
                       child: Row(
                         children: const <Widget>[
-                          Expanded(flex: 3, child: ColoredBox(color: Color(0xFF1B2430))),
-                          Expanded(flex: 2, child: ColoredBox(color: Color(0xFFF2EDE4))),
+                          Expanded(
+                            flex: 3,
+                            child: ColoredBox(color: Color(0xFF1B2430)),
+                          ),
+                          Expanded(
+                            flex: 2,
+                            child: ColoredBox(color: Color(0xFFF2EDE4)),
+                          ),
                         ],
                       ),
                     ),
                     Center(
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: SizedBox(height: _barHeight, child: LayoutBuilder(builder: _buildBar)),
+                        child: SizedBox(
+                          height: _barHeight,
+                          child: LayoutBuilder(builder: _buildBar),
+                        ),
                       ),
                     ),
                   ],
@@ -134,8 +159,20 @@ class _Pr73LiquidGlassPartsTestPageState extends State<Pr73LiquidGlassPartsTestP
   Widget _buildBar(BuildContext context, BoxConstraints constraints) {
     final double wide = constraints.maxWidth - _circle - _gap;
     final List<CNGlassPart> parts = <CNGlassPart>[
-      CNGlassPart(left: 0, top: 0, width: wide, height: _barHeight, radius: _barHeight / 2),
-      CNGlassPart(left: wide + _gap, top: 0, width: _circle, height: _barHeight, radius: _barHeight / 2),
+      CNGlassPart(
+        left: 0,
+        top: 0,
+        width: wide,
+        height: _barHeight,
+        radius: _barHeight / 2,
+      ),
+      CNGlassPart(
+        left: wide + _gap,
+        top: 0,
+        width: _circle,
+        height: _barHeight,
+        radius: _barHeight / 2,
+      ),
     ];
 
     return Stack(
@@ -143,7 +180,10 @@ class _Pr73LiquidGlassPartsTestPageState extends State<Pr73LiquidGlassPartsTestP
         if (_mode == _Mode.parts)
           Positioned.fill(
             child: LiquidGlassContainer(
-              config: LiquidGlassConfig(effect: CNGlassEffect.regular, parts: parts),
+              config: LiquidGlassConfig(
+                effect: CNGlassEffect.regular,
+                parts: parts,
+              ),
               child: const SizedBox.expand(),
             ),
           ),
@@ -152,7 +192,10 @@ class _Pr73LiquidGlassPartsTestPageState extends State<Pr73LiquidGlassPartsTestP
             child: ClipPath(
               clipper: _PartsClipper(parts),
               child: const LiquidGlassContainer(
-                config: LiquidGlassConfig(effect: CNGlassEffect.regular, shape: CNGlassEffectShape.rect),
+                config: LiquidGlassConfig(
+                  effect: CNGlassEffect.regular,
+                  shape: CNGlassEffectShape.rect,
+                ),
                 child: SizedBox.expand(),
               ),
             ),
@@ -178,7 +221,11 @@ class _Pr73LiquidGlassPartsTestPageState extends State<Pr73LiquidGlassPartsTestP
             ],
           ),
         // Flutter-drawn markers on the same rects the glass is given.
-        Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: _PartsOutline(parts)))),
+        Positioned.fill(
+          child: IgnorePointer(
+            child: CustomPaint(painter: _PartsOutline(parts)),
+          ),
+        ),
       ],
     );
   }
