@@ -31,6 +31,8 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
   private var currentIconSizes: [CGFloat] = [] // Track icon sizes for dynamic height calculation
   private var labelFontFamily: String? = nil
   private var labelFontSize: CGFloat = 0 // 0 means system default (~10pt)
+  private var reportsPillFrame: Bool = false
+  private var lastPillFrame: CGRect?
 
   init(frame: CGRect, viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativeTabBar_\(viewId)", binaryMessenger: messenger)
@@ -111,6 +113,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
     if let dict = args as? [String: Any] {
       if let ff = dict["labelFontFamily"] as? String, !ff.isEmpty { self.labelFontFamily = ff }
       if let fs = dict["labelFontSize"] as? NSNumber, fs.doubleValue > 0 { self.labelFontSize = CGFloat(truncating: fs) }
+      if let r = dict["reportPillFrame"] as? NSNumber { self.reportsPillFrame = r.boolValue }
     }
 
     container.backgroundColor = .clear
@@ -337,8 +340,9 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
         }
       }
     } else {
-      let bar = UITabBar(frame: .zero)
+      let bar = CNPillReportingTabBar(frame: .zero)
       tabBar = bar
+      if reportsPillFrame { bar.onPillFrame = { [weak self] frame in self?.reportPillFrame(frame) } }
       bar.delegate = self
       bar.translatesAutoresizingMaskIntoConstraints = false
       // iOS 26+: leave the bar unclipped so the Liquid Glass selection pill
@@ -781,8 +785,9 @@ channel.setMethodCallHandler { [weak self] call, result in
               }
             }
           } else {
-            let bar = UITabBar(frame: .zero)
+            let bar = CNPillReportingTabBar(frame: .zero)
             self.tabBar = bar
+            if self.reportsPillFrame { bar.onPillFrame = { [weak self] frame in self?.reportPillFrame(frame) } }
             bar.delegate = self
             bar.translatesAutoresizingMaskIntoConstraints = false
             // iOS 26+: leave unclipped for pill overflow into 6pt headroom.
@@ -1052,6 +1057,13 @@ channel.setMethodCallHandler { [weak self] call, result in
     }
   }
 
+  private func reportPillFrame(_ frame: CGRect) {
+    if let last = lastPillFrame, abs(last.minX - frame.minX) <= 0.5, abs(last.minY - frame.minY) <= 0.5,
+      abs(last.width - frame.width) <= 0.5, abs(last.height - frame.height) <= 0.5 { return }
+    lastPillFrame = frame
+    channel.invokeMethod("pillFrame", arguments: ["frame": [Double(frame.minX), Double(frame.minY), Double(frame.width), Double(frame.height)]])
+  }
+
   deinit {
     channel.setMethodCallHandler(nil)
     tabBar?.delegate = nil
@@ -1128,3 +1140,25 @@ channel.setMethodCallHandler { [weak self] call, result in
 
 }
 
+/// Tab bar that reports where UIKit put its iOS 26 Liquid Glass pill, in its superview's coordinates, after each layout.
+final class CNPillReportingTabBar: UITabBar {
+  var onPillFrame: ((CGRect) -> Void)?
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    guard let onPillFrame = onPillFrame, let superview = superview, let frame = pillFrame(in: superview) else { return }
+    onPillFrame(frame)
+  }
+
+  /// UIKit has no public API for the pill, so this finds its private platter view;
+  /// returns nil when the hierarchy changes, so a later iOS reports nothing rather than a wrong frame.
+  private func pillFrame(in target: UIView) -> CGRect? {
+    guard #available(iOS 26.0, *),
+      let platter = subviews.first(where: { String(describing: type(of: $0)).contains("Platter") }),
+      platter.bounds.width > 0, platter.bounds.height > 0 else { return nil }
+    // Center and bounds, not frame, so the press-to-grow transform doesn't skew the result.
+    let size = platter.bounds.size
+    let center = convert(platter.center, to: target)
+    return CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
+  }
+}
