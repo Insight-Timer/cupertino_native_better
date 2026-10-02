@@ -1,3 +1,15 @@
+## Unreleased
+
+### Added: `CNTabBar.showFallbackWhileLoading`
+
+While the native bar is being prepared on iOS 26+ (rendering the item icons, plus a short delay after a hot restart in debug builds), `CNTabBar` shows the Flutter fallback bar so the space isn't blank (Issue #5). For apps whose bar looks nothing like that fallback, for example ones using `imageAsset` icons, which the fallback draws as placeholders, this reads as a different bar flashing in before the Liquid Glass one.
+
+Set `showFallbackWhileLoading: false` to keep the bar's space empty until the native bar is ready. The default (`true`) is unchanged. If preparation fails, the fallback is still shown so the bar never disappears.
+
+### Added: `CNTabBar.onPillFrame`
+
+UIKit sizes and insets the iOS 26 Liquid Glass capsule per device, so Flutter content that lines up with it (a floating player above the bar, for example) can't rely on fixed numbers. `onPillFrame` reports the capsule's frame, in the widget's coordinates, whenever the native layout moves it. iOS 26+ only; it isn't called when the capsule can't be located.
+
 ## 1.6.0
 
 > Minor rather than patch because `CNGlassEffect` gains a value (`clear`). That is source-breaking for anyone with an exhaustive `switch` over the enum. 1.5.5 was tagged during development and never published; everything it contained is here.
