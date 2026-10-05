@@ -32,6 +32,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
   private var labelFontFamily: String? = nil
   private var labelFontSize: CGFloat = 0 // 0 means system default (~10pt)
   private var reportsPillFrame: Bool = false
+  private var pillTopRoom: CGFloat = 14
 
   init(frame: CGRect, viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativeTabBar_\(viewId)", binaryMessenger: messenger)
@@ -113,6 +114,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
       if let ff = dict["labelFontFamily"] as? String, !ff.isEmpty { self.labelFontFamily = ff }
       if let fs = dict["labelFontSize"] as? NSNumber, fs.doubleValue > 0 { self.labelFontSize = CGFloat(truncating: fs) }
       if let r = dict["reportPillFrame"] as? NSNumber { self.reportsPillFrame = r.boolValue }
+      if let room = dict["pillTopRoom"] as? NSNumber { self.pillTopRoom = CGFloat(truncating: room) }
     }
 
     container.backgroundColor = .clear
@@ -363,7 +365,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
       bar.items = buildItems(0..<count)
       if selectedIndex >= 0, let items = bar.items, selectedIndex < items.count { bar.selectedItem = items[selectedIndex] }
       container.addSubview(bar)
-      let barTop = bar.topAnchor.constraint(equalTo: container.topAnchor, constant: 14)
+      let barTop = bar.topAnchor.constraint(equalTo: container.topAnchor, constant: self.pillTopRoom)
       let barBottom = bar.bottomAnchor.constraint(equalTo: container.bottomAnchor)
       // Lower priority so UIKit can break these against `_UITemporaryLayoutHeight = 0`
       // during the initial layout pass without logging an unsatisfiable-constraints warning.
@@ -445,7 +447,7 @@ channel.setMethodCallHandler { [weak self] call, result in
           // edge. We position the bar 14pt below container.top via the
           // layout constraints, and report height + 14 here so Flutter
           // reserves space matching what the platform view actually needs.
-          let pillTopRoom: CGFloat = 14.0
+          let pillTopRoom = self.pillTopRoom
           let dynamicHeight = size.height + extraHeight + pillTopRoom
           result(["width": Double(size.width), "height": Double(dynamicHeight)])
         } else {
@@ -802,7 +804,7 @@ channel.setMethodCallHandler { [weak self] call, result in
             bar.items = buildItems(0..<count)
             if let items = bar.items, selectedIndex >= 0, selectedIndex < items.count { bar.selectedItem = items[selectedIndex] }
             self.container.addSubview(bar)
-            let barTop = bar.topAnchor.constraint(equalTo: self.container.topAnchor, constant: 14)
+            let barTop = bar.topAnchor.constraint(equalTo: self.container.topAnchor, constant: self.pillTopRoom)
             let barBottom = bar.bottomAnchor.constraint(equalTo: self.container.bottomAnchor)
             barTop.priority = .defaultHigh
             barBottom.priority = .defaultHigh
