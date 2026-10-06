@@ -484,7 +484,7 @@ class _CNTabBarState extends State<CNTabBar> {
         })
         .catchError((_) {
           if (!mounted || gen != _prepGeneration) return;
-          _preparing = false;
+          setState(() => _preparing = false);
         });
   }
 
@@ -528,7 +528,10 @@ class _CNTabBarState extends State<CNTabBar> {
     }
 
     final h = widget.height ?? _intrinsicHeight ?? 50.0;
-    Widget whileLoading() => widget.showFallbackWhileLoading
+    // A failed preparation keeps the fallback, so the bar never vanishes.
+    final preparationFailed = !_preparing && _creationParams == null;
+    Widget whileLoading() =>
+        widget.showFallbackWhileLoading || preparationFailed
         ? _buildFlutterFallback(context)
         : SizedBox(height: h);
 
@@ -541,8 +544,7 @@ class _CNTabBarState extends State<CNTabBar> {
     }
 
     if (_creationParams == null) {
-      // A failed preparation keeps the fallback, so the bar never vanishes.
-      return _preparing ? whileLoading() : _buildFlutterFallback(context);
+      return whileLoading();
     }
 
     // Issue #31: when a modal/sheet is presented over our route, hide
