@@ -117,6 +117,7 @@ class CNTabBar extends StatefulWidget {
     this.autoHideOnPageTransition = true,
     this.showFallbackWhileLoading = true,
     this.onPillFrame,
+    this.onItemIconFrames,
   }) : assert(items.length >= 2, 'Tab bar must have at least 2 items'),
        assert(
          items.length <= 5,
@@ -288,6 +289,13 @@ class CNTabBar extends StatefulWidget {
   /// Flutter content with it. iOS 26+ only; not called when it can't be located.
   final ValueChanged<Rect>? onPillFrame;
 
+  /// Called with each item's icon frame, in this widget's coordinates, whenever
+  /// the native layout moves them (first layout, rotation, label changes).
+  ///
+  /// Useful for drawing Flutter content over a tab, such as a dot or a callout
+  /// arrow. iOS only; not called when the icons can't be located.
+  final ValueChanged<List<Rect>>? onItemIconFrames;
+
   @override
   State<CNTabBar> createState() => _CNTabBarState();
 }
@@ -344,6 +352,7 @@ class _CNTabBarState extends State<CNTabBar> {
   // generation token so that stale completions from superseded rebuilds
   // never feed into the widget tree.
   Map<String, dynamic>? _creationParams;
+  final GlobalKey _platformViewKey = GlobalKey();
   int _prepGeneration = 0;
   bool _preparing = false;
 
@@ -765,6 +774,7 @@ class _CNTabBarState extends State<CNTabBar> {
       'rightCount': widget.rightCount,
       'splitSpacing': widget.splitSpacing,
       if (widget.onPillFrame != null) 'reportPillFrame': true,
+      if (widget.onItemIconFrames != null) 'reportIconFrames': true,
       'style': capturedStyle
         ..addAll({
           if (capturedBackgroundColor != null)
@@ -877,10 +887,12 @@ class _CNTabBarState extends State<CNTabBar> {
     if (!widget.split && widget.shrinkCentered) {
       final w = _intrinsicWidth;
       return ClipRect(
+        key: _platformViewKey,
         child: SizedBox(height: h, width: w, child: platformView),
       );
     }
     return ClipRect(
+      key: _platformViewKey,
       child: SizedBox(height: h, child: platformView),
     );
   }
@@ -984,8 +996,32 @@ class _CNTabBarState extends State<CNTabBar> {
           ),
         );
       }
+    } else if (call.method == 'iconFrames') {
+      _reportIconFrames(call.arguments as Map?);
     }
     return null;
+  }
+
+  /// Native frames are relative to the platform view; shift them into this widget's coordinates.
+  void _reportIconFrames(Map? args) {
+    final callback = widget.onItemIconFrames;
+    final raw = args?['frames'] as List?;
+    if (callback == null || raw == null || !mounted) return;
+    final bar = context.findRenderObject() as RenderBox?;
+    final view =
+        _platformViewKey.currentContext?.findRenderObject() as RenderBox?;
+    final Offset origin = (bar != null && view != null && view.attached)
+        ? view.localToGlobal(Offset.zero, ancestor: bar)
+        : Offset.zero;
+    callback([
+      for (final f in raw.cast<List>())
+        Rect.fromLTWH(
+          (f[0] as num).toDouble(),
+          (f[1] as num).toDouble(),
+          (f[2] as num).toDouble(),
+          (f[3] as num).toDouble(),
+        ).shift(origin),
+    ]);
   }
 
   Future<void> _syncPropsToNativeIfNeeded() async {
