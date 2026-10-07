@@ -31,6 +31,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
   private var currentIconSizes: [CGFloat] = [] // Track icon sizes for dynamic height calculation
   private var labelFontFamily: String? = nil
   private var labelFontSize: CGFloat = 0 // 0 means system default (~10pt)
+  private var reportsPillFrame: Bool = false
   private var reportsIconFrames: Bool = false
   private var iconFrameReportScheduled: Bool = false
   private var lastIconFrames: [CGRect] = []
@@ -114,6 +115,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
     if let dict = args as? [String: Any] {
       if let ff = dict["labelFontFamily"] as? String, !ff.isEmpty { self.labelFontFamily = ff }
       if let fs = dict["labelFontSize"] as? NSNumber, fs.doubleValue > 0 { self.labelFontSize = CGFloat(truncating: fs) }
+      if let r = dict["reportPillFrame"] as? NSNumber { self.reportsPillFrame = r.boolValue }
       if let r = dict["reportIconFrames"] as? NSNumber { self.reportsIconFrames = r.boolValue }
     }
     if reportsIconFrames {
@@ -344,8 +346,9 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
         }
       }
     } else {
-      let bar = UITabBar(frame: .zero)
+      let bar = CNPillReportingTabBar(frame: .zero)
       tabBar = bar
+      if reportsPillFrame { bar.onPillFrame = { [weak self] frame in self?.reportPillFrame(frame) } }
       bar.delegate = self
       bar.translatesAutoresizingMaskIntoConstraints = false
       // iOS 26+: leave the bar unclipped so the Liquid Glass selection pill
@@ -790,8 +793,9 @@ channel.setMethodCallHandler { [weak self] call, result in
               }
             }
           } else {
-            let bar = UITabBar(frame: .zero)
+            let bar = CNPillReportingTabBar(frame: .zero)
             self.tabBar = bar
+            if self.reportsPillFrame { bar.onPillFrame = { [weak self] frame in self?.reportPillFrame(frame) } }
             bar.delegate = self
             bar.translatesAutoresizingMaskIntoConstraints = false
             // iOS 26+: leave unclipped for pill overflow into 6pt headroom.
@@ -1061,6 +1065,10 @@ channel.setMethodCallHandler { [weak self] call, result in
     }
   }
 
+  private func reportPillFrame(_ frame: CGRect) {
+    channel.invokeMethod("pillFrame", arguments: ["frame": [Double(frame.minX), Double(frame.minY), Double(frame.width), Double(frame.height)]])
+  }
+
   // MARK: - Icon frames
 
   /// Reports each item's icon frame to Dart after the current layout pass, and again once animations settle.
@@ -1191,6 +1199,30 @@ channel.setMethodCallHandler { [weak self] call, result in
 
 }
 
+/// Tab bar that reports where UIKit put its iOS 26 Liquid Glass pill, in its superview's coordinates, when it moves.
+private final class CNPillReportingTabBar: UITabBar {
+  var onPillFrame: ((CGRect) -> Void)?
+  private var reportedPillFrame: CGRect?
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    guard let onPillFrame, let superview, let frame = pillFrame(in: superview), frame != reportedPillFrame else { return }
+    reportedPillFrame = frame
+    onPillFrame(frame)
+  }
+
+  /// UIKit has no public API for the pill, so this finds its private platter view;
+  /// returns nil when the hierarchy changes, so a later iOS reports nothing rather than a wrong frame.
+  private func pillFrame(in target: UIView) -> CGRect? {
+    guard #available(iOS 26.0, *),
+      let platter = subviews.first(where: { String(describing: type(of: $0)).contains("Platter") }),
+      platter.bounds.width > 0, platter.bounds.height > 0 else { return nil }
+    // Center and bounds, not frame, so the press-to-grow transform doesn't skew the result.
+    let size = platter.bounds.size
+    let center = convert(platter.center, to: target)
+    return CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
+  }
+}
 
 /// Container that tells the tab bar view when UIKit lays it out.
 final class CNLayoutReportingView: UIView {

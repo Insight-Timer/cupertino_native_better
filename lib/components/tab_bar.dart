@@ -115,6 +115,8 @@ class CNTabBar extends StatefulWidget {
     this.labelFontSize,
     this.autoHideOnModal = true,
     this.autoHideOnPageTransition = true,
+    this.showFallbackWhileLoading = true,
+    this.onPillFrame,
     this.onItemIconFrames,
   }) : assert(items.length >= 2, 'Tab bar must have at least 2 items'),
        assert(
@@ -268,6 +270,24 @@ class CNTabBar extends StatefulWidget {
   /// re-introduce the page-wide occlusion artifact for content above
   /// the tab bar.
   final bool autoHideOnPageTransition;
+
+  /// Whether the Flutter fallback bar is shown while the native bar is being
+  /// prepared on iOS 26+ (Issue #5). Default: `true`.
+  ///
+  /// Preparation covers rendering the item icons and, in debug builds, the
+  /// short delay after a hot restart before platform views can be created.
+  ///
+  /// Set to `false` to keep the bar's space empty until the native bar is
+  /// ready. Useful when the fallback looks unlike the native bar, for example
+  /// with `imageAsset` icons, which the fallback draws as placeholders.
+  final bool showFallbackWhileLoading;
+
+  /// Called with the iOS 26 Liquid Glass capsule's frame, in this widget's
+  /// coordinates, whenever the native layout moves it.
+  ///
+  /// UIKit sizes and insets the capsule per device, so use this to align
+  /// Flutter content with it. iOS 26+ only; not called when it can't be located.
+  final ValueChanged<Rect>? onPillFrame;
 
   /// Called with each item's icon frame, in this widget's coordinates, whenever
   /// the native layout moves them (first layout, rotation, label changes).
@@ -473,7 +493,7 @@ class _CNTabBarState extends State<CNTabBar> {
         })
         .catchError((_) {
           if (!mounted || gen != _prepGeneration) return;
-          _preparing = false;
+          setState(() => _preparing = false);
         });
   }
 
@@ -516,16 +536,24 @@ class _CNTabBarState extends State<CNTabBar> {
       return _buildFlutterFallback(context);
     }
 
+    final h = widget.height ?? _intrinsicHeight ?? 50.0;
+    // A failed preparation keeps the fallback, so the bar never vanishes.
+    final preparationFailed = !_preparing && _creationParams == null;
+    Widget whileLoading() =>
+        widget.showFallbackWhileLoading || preparationFailed
+        ? _buildFlutterFallback(context)
+        : SizedBox(height: h);
+
     // Guard against creating platform views too early after hot
     // restart / cold start.  The engine may not have fully purged
     // previous-isolate view registrations yet.
     if (!PlatformViewGuard.isReady) {
       PlatformViewGuard.ensureScheduled();
-      return _buildFlutterFallback(context);
+      return whileLoading();
     }
 
     if (_creationParams == null) {
-      return _buildFlutterFallback(context);
+      return whileLoading();
     }
 
     // Issue #31: when a modal/sheet is presented over our route, hide
@@ -544,7 +572,6 @@ class _CNTabBarState extends State<CNTabBar> {
     // destroyed, so when the transition completes the bar is just
     // there with the correct selected index, no recreate animation.
     final hideForModal = _modalUp && widget.autoHideOnModal;
-    final h = widget.height ?? _intrinsicHeight ?? 50.0;
 
     // Modal hide must DESTROY the platform view — see comment above.
     if (hideForModal) {
@@ -746,6 +773,7 @@ class _CNTabBarState extends State<CNTabBar> {
       'split': _hasSearch ? true : widget.split,
       'rightCount': widget.rightCount,
       'splitSpacing': widget.splitSpacing,
+      if (widget.onPillFrame != null) 'reportPillFrame': true,
       if (widget.onItemIconFrames != null) 'reportIconFrames': true,
       'style': capturedStyle
         ..addAll({
@@ -955,6 +983,19 @@ class _CNTabBarState extends State<CNTabBar> {
       final args = call.arguments as Map?;
       final text = args?['text'] as String? ?? '';
       widget.searchItem?.onSearchSubmit?.call(text);
+    } else if (call.method == 'pillFrame') {
+      // The platform view sits at this widget's origin, so native frames need no shift.
+      final f = (call.arguments as Map?)?['frame'] as List?;
+      if (f != null && mounted) {
+        widget.onPillFrame?.call(
+          Rect.fromLTWH(
+            (f[0] as num).toDouble(),
+            (f[1] as num).toDouble(),
+            (f[2] as num).toDouble(),
+            (f[3] as num).toDouble(),
+          ),
+        );
+      }
     } else if (call.method == 'iconFrames') {
       _reportIconFrames(call.arguments as Map?);
     }
