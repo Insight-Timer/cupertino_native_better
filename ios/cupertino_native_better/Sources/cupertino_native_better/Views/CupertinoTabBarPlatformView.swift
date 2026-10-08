@@ -36,6 +36,12 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
   private var reportsIconFrames: Bool = false
   private var iconFrameReportScheduled: Bool = false
   private var lastIconFrames: [CGRect] = []
+  private var lastPillFrame: CGRect?
+  private var isMinimized = false
+  private var minimizedSize: CGFloat?
+  private var pendingMinimized = false
+  private var compactGlass: UIVisualEffectView?
+  private var compactIcon: UIImageView?
 
   init(frame: CGRect, viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativeTabBar_\(viewId)", binaryMessenger: messenger)
@@ -119,6 +125,8 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
       if let r = dict["reportPillFrame"] as? NSNumber { self.reportsPillFrame = r.boolValue }
       if let room = dict["pillTopRoom"] as? NSNumber { self.pillTopRoom = CGFloat(truncating: room) }
       if let r = dict["reportIconFrames"] as? NSNumber { self.reportsIconFrames = r.boolValue }
+      if let m = dict["minimized"] as? NSNumber { self.pendingMinimized = m.boolValue }
+      if let size = dict["minimizedSize"] as? NSNumber { self.minimizedSize = CGFloat(truncating: size) }
     }
     if reportsIconFrames {
       container.onLayout = { [weak self] in self?.scheduleIconFrameReport() }
@@ -443,6 +451,13 @@ channel.setMethodCallHandler { [weak self] call, result in
       // Any update can move the items; re-read their icons once UIKit has laid them out.
       defer { self.scheduleIconFrameReport() }
       switch call.method {
+      case "setMinimized":
+        let args = call.arguments as? [String: Any]
+        let minimized = (args?["minimized"] as? NSNumber)?.boolValue ?? false
+        if let size = args?["size"] as? NSNumber { self.minimizedSize = CGFloat(truncating: size) }
+        self.pendingMinimized = false
+        self.applyMinimized(minimized)
+        result(nil)
       case "getIntrinsicSize":
         if let bar = self.tabBar ?? self.tabBarLeft ?? self.tabBarRight {
           let size = bar.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
@@ -1068,6 +1083,12 @@ channel.setMethodCallHandler { [weak self] call, result in
   }
 
   private func reportPillFrame(_ frame: CGRect) {
+    lastPillFrame = frame
+    // A view re-created while minimized can only collapse once UIKit has placed the pill.
+    if pendingMinimized {
+      pendingMinimized = false
+      UIView.performWithoutAnimation { applyMinimized(true) }
+    }
     channel.invokeMethod("pillFrame", arguments: ["frame": [Double(frame.minX), Double(frame.minY), Double(frame.width), Double(frame.height)]])
   }
 
@@ -1193,6 +1214,85 @@ channel.setMethodCallHandler { [weak self] call, result in
 
   private static func loadFlutterAsset(_ assetPath: String, size: CGSize? = nil) -> UIImage? {
     return ImageUtils.loadFlutterAsset(assetPath, size: size)
+  }
+
+  // MARK: - Minimized (single selected item in a glass circle)
+
+  private func applyMinimized(_ minimized: Bool) {
+    guard #available(iOS 26.0, *), let bar = tabBar, !isSplit, let pill = lastPillFrame else { return }
+    guard minimized != isMinimized else { return }
+    isMinimized = minimized
+    // Centred on the pill's line, so a smaller circle lines up with content beside it.
+    let d = minimizedSize ?? pill.height
+    let circle = CGRect(x: pill.minX, y: pill.midY - d / 2, width: d, height: d)
+    let glass = ensureCompactGlass()
+    if let item = bar.selectedItem {
+      compactIcon?.image = (item.selectedImage ?? item.image)?.withRenderingMode(.alwaysTemplate)
+    }
+    compactIcon?.tintColor = bar.tintColor
+    if minimized {
+      bar.isUserInteractionEnabled = false
+      glass.frame = pill
+      glass.alpha = 1
+      glass.isHidden = false
+      container.bringSubviewToFront(glass)
+      compactIcon?.alpha = 0
+      UIView.animate(withDuration: 0.12) { bar.alpha = 0 }
+      UIView.animate(springDuration: 0.5, bounce: 0.18) {
+        glass.frame = circle
+        self.compactIcon?.alpha = 1
+      }
+    } else {
+      // The bar is live at once and fades in over the circle, which grows and dissolves beneath it.
+      bar.isUserInteractionEnabled = true
+      container.insertSubview(glass, belowSubview: bar)
+      UIView.animate(springDuration: 0.35, bounce: 0.15, animations: {
+        glass.frame = pill
+        glass.alpha = 0
+        self.compactIcon?.alpha = 0
+        bar.alpha = 1
+      }, completion: { _ in
+        guard !self.isMinimized else { return }
+        glass.isHidden = true
+        glass.alpha = 1
+      })
+    }
+  }
+
+  @available(iOS 26.0, *)
+  private func ensureCompactGlass() -> UIVisualEffectView {
+    if let glass = compactGlass { return glass }
+    let glass = UIVisualEffectView(effect: UIGlassEffect())
+    glass.cornerConfiguration = .capsule()
+    glass.isHidden = true
+    let icon = UIImageView()
+    icon.contentMode = .scaleAspectFit
+    icon.translatesAutoresizingMaskIntoConstraints = false
+    glass.contentView.addSubview(icon)
+    NSLayoutConstraint.activate([
+      icon.centerXAnchor.constraint(equalTo: glass.contentView.centerXAnchor),
+      icon.centerYAnchor.constraint(equalTo: glass.contentView.centerYAnchor),
+      icon.widthAnchor.constraint(equalToConstant: 28),
+      icon.heightAnchor.constraint(equalToConstant: 28),
+    ])
+    let button = UIButton(type: .custom)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    button.addTarget(self, action: #selector(compactTapped), for: .touchUpInside)
+    glass.contentView.addSubview(button)
+    NSLayoutConstraint.activate([
+      button.leadingAnchor.constraint(equalTo: glass.contentView.leadingAnchor),
+      button.trailingAnchor.constraint(equalTo: glass.contentView.trailingAnchor),
+      button.topAnchor.constraint(equalTo: glass.contentView.topAnchor),
+      button.bottomAnchor.constraint(equalTo: glass.contentView.bottomAnchor),
+    ])
+    container.addSubview(glass)
+    compactGlass = glass
+    compactIcon = icon
+    return glass
+  }
+
+  @objc private func compactTapped() {
+    channel.invokeMethod("minimizedTap", arguments: nil)
   }
 
   private static func createImageFromData(_ data: Data, format: String?, scale: CGFloat, size: CGSize? = nil) -> UIImage? {
