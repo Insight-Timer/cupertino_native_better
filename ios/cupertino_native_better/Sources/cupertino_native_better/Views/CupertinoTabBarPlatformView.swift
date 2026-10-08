@@ -4,7 +4,7 @@ import SVGKit
 
 class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelegate {
   private let channel: FlutterMethodChannel
-  private let container: UIView
+  private let container: CNLayoutReportingView
   private var tabBar: UITabBar?
   private var tabBarLeft: UITabBar?
   private var tabBarRight: UITabBar?
@@ -33,10 +33,13 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
   private var labelFontSize: CGFloat = 0 // 0 means system default (~10pt)
   private var reportsPillFrame: Bool = false
   private var pillTopRoom: CGFloat = 14
+  private var reportsIconFrames: Bool = false
+  private var iconFrameReportScheduled: Bool = false
+  private var lastIconFrames: [CGRect] = []
 
   init(frame: CGRect, viewId: Int64, args: Any?, messenger: FlutterBinaryMessenger) {
     self.channel = FlutterMethodChannel(name: "CupertinoNativeTabBar_\(viewId)", binaryMessenger: messenger)
-    self.container = UIView(frame: frame)
+    self.container = CNLayoutReportingView(frame: frame)
 
     var labels: [String] = []
     var symbols: [String] = []
@@ -115,6 +118,10 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
       if let fs = dict["labelFontSize"] as? NSNumber, fs.doubleValue > 0 { self.labelFontSize = CGFloat(truncating: fs) }
       if let r = dict["reportPillFrame"] as? NSNumber { self.reportsPillFrame = r.boolValue }
       if let room = dict["pillTopRoom"] as? NSNumber { self.pillTopRoom = CGFloat(truncating: room) }
+      if let r = dict["reportIconFrames"] as? NSNumber { self.reportsIconFrames = r.boolValue }
+    }
+    if reportsIconFrames {
+      container.onLayout = { [weak self] in self?.scheduleIconFrameReport() }
     }
 
     container.backgroundColor = .clear
@@ -433,6 +440,8 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
     self.currentIconSizes = sizes.compactMap { $0 }.map { CGFloat(truncating: $0) }
 channel.setMethodCallHandler { [weak self] call, result in
       guard let self = self else { result(nil); return }
+      // Any update can move the items; re-read their icons once UIKit has laid them out.
+      defer { self.scheduleIconFrameReport() }
       switch call.method {
       case "getIntrinsicSize":
         if let bar = self.tabBar ?? self.tabBarLeft ?? self.tabBarRight {
@@ -1062,6 +1071,60 @@ channel.setMethodCallHandler { [weak self] call, result in
     channel.invokeMethod("pillFrame", arguments: ["frame": [Double(frame.minX), Double(frame.minY), Double(frame.width), Double(frame.height)]])
   }
 
+  // MARK: - Icon frames
+
+  /// Reports each item's icon frame to Dart after the current layout pass, and again once animations settle.
+  private func scheduleIconFrameReport() {
+    guard reportsIconFrames, !iconFrameReportScheduled else { return }
+    iconFrameReportScheduled = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self else { return }
+      self.iconFrameReportScheduled = false
+      self.reportIconFramesIfChanged()
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.reportIconFramesIfChanged() }
+    }
+  }
+
+  private func reportIconFramesIfChanged() {
+    guard let frames = currentIconFrames() else { return }
+    let changed = frames.count != lastIconFrames.count
+      || zip(frames, lastIconFrames).contains { abs($0.minX - $1.minX) > 0.5 || abs($0.minY - $1.minY) > 0.5
+        || abs($0.width - $1.width) > 0.5 || abs($0.height - $1.height) > 0.5 }
+    guard changed else { return }
+    lastIconFrames = frames
+    let payload = frames.map { [Double($0.minX), Double($0.minY), Double($0.width), Double($0.height)] }
+    channel.invokeMethod("iconFrames", arguments: ["frames": payload])
+  }
+
+  /// UIKit has no public API for item frames, so this finds the visible icon image views, one per item.
+  /// Returns nil when the count doesn't match the items, so a changed hierarchy reports nothing rather than wrong frames.
+  private func currentIconFrames() -> [CGRect]? {
+    let bars = [tabBar, tabBarLeft, tabBarRight].compactMap { $0 }
+    let itemCount = bars.reduce(0) { $0 + ($1.items?.count ?? 0) }
+    guard itemCount > 0 else { return nil }
+    var found: [CGRect] = []
+    func collect(_ view: UIView) {
+      for sub in view.subviews where !sub.isHidden && sub.alpha > 0.01 {
+        if let iv = sub as? UIImageView, iv.image != nil, let parent = iv.superview {
+          // Center and bounds, not frame, so a running bounce transform doesn't skew the result.
+          let size = iv.bounds.size
+          if (8...64).contains(size.width) && (8...64).contains(size.height) {
+            let c = parent.convert(iv.center, to: container)
+            found.append(CGRect(x: c.x - size.width / 2, y: c.y - size.height / 2, width: size.width, height: size.height))
+          }
+        }
+        collect(sub)
+      }
+    }
+    bars.forEach(collect)
+    // iOS 26 draws the selected item a second time inside the glass pill; keep one icon per position.
+    var icons: [CGRect] = []
+    for f in found.sorted(by: { $0.midX < $1.midX }) where !icons.contains(where: { abs($0.midX - f.midX) < 6 }) {
+      icons.append(f)
+    }
+    return icons.count == itemCount ? icons : nil
+  }
+
   deinit {
     channel.setMethodCallHandler(nil)
     tabBar?.delegate = nil
@@ -1160,5 +1223,15 @@ private final class CNPillReportingTabBar: UITabBar {
     let size = platter.bounds.size
     let center = convert(platter.center, to: target)
     return CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
+  }
+}
+
+/// Container that tells the tab bar view when UIKit lays it out.
+final class CNLayoutReportingView: UIView {
+  var onLayout: (() -> Void)?
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    onLayout?()
   }
 }

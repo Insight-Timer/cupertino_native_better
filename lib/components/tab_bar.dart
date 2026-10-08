@@ -118,6 +118,7 @@ class CNTabBar extends StatefulWidget {
     this.showFallbackWhileLoading = true,
     this.onPillFrame,
     this.pillTopRoom,
+    this.onItemIconFrames,
   }) : assert(items.length >= 2, 'Tab bar must have at least 2 items'),
        assert(
          items.length <= 5,
@@ -291,6 +292,12 @@ class CNTabBar extends StatefulWidget {
 
   /// Room above the non-split iOS 26 bar for the selection pill's morph (default 14); less may clip it.
   final double? pillTopRoom;
+  /// Called with each item's icon frame, in this widget's coordinates, whenever
+  /// the native layout moves them (first layout, rotation, label changes).
+  ///
+  /// Useful for drawing Flutter content over a tab, such as a dot or a callout
+  /// arrow. iOS only; not called when the icons can't be located.
+  final ValueChanged<List<Rect>>? onItemIconFrames;
 
   @override
   State<CNTabBar> createState() => _CNTabBarState();
@@ -348,6 +355,7 @@ class _CNTabBarState extends State<CNTabBar> {
   // generation token so that stale completions from superseded rebuilds
   // never feed into the widget tree.
   Map<String, dynamic>? _creationParams;
+  final GlobalKey _platformViewKey = GlobalKey();
   int _prepGeneration = 0;
   bool _preparing = false;
 
@@ -488,7 +496,7 @@ class _CNTabBarState extends State<CNTabBar> {
         })
         .catchError((_) {
           if (!mounted || gen != _prepGeneration) return;
-          _preparing = false;
+          setState(() => _preparing = false);
         });
   }
 
@@ -532,7 +540,10 @@ class _CNTabBarState extends State<CNTabBar> {
     }
 
     final h = widget.height ?? _intrinsicHeight ?? 50.0;
-    Widget whileLoading() => widget.showFallbackWhileLoading
+    // A failed preparation keeps the fallback, so the bar never vanishes.
+    final preparationFailed = !_preparing && _creationParams == null;
+    Widget whileLoading() =>
+        widget.showFallbackWhileLoading || preparationFailed
         ? _buildFlutterFallback(context)
         : SizedBox(height: h);
 
@@ -545,8 +556,7 @@ class _CNTabBarState extends State<CNTabBar> {
     }
 
     if (_creationParams == null) {
-      // A failed preparation keeps the fallback, so the bar never vanishes.
-      return _preparing ? whileLoading() : _buildFlutterFallback(context);
+      return whileLoading();
     }
 
     // Issue #31: when a modal/sheet is presented over our route, hide
@@ -768,6 +778,7 @@ class _CNTabBarState extends State<CNTabBar> {
       'splitSpacing': widget.splitSpacing,
       if (widget.onPillFrame != null) 'reportPillFrame': true,
       if (widget.pillTopRoom != null) 'pillTopRoom': widget.pillTopRoom,
+      if (widget.onItemIconFrames != null) 'reportIconFrames': true,
       'style': capturedStyle
         ..addAll({
           if (capturedBackgroundColor != null)
@@ -880,10 +891,12 @@ class _CNTabBarState extends State<CNTabBar> {
     if (!widget.split && widget.shrinkCentered) {
       final w = _intrinsicWidth;
       return ClipRect(
+        key: _platformViewKey,
         child: SizedBox(height: h, width: w, child: platformView),
       );
     }
     return ClipRect(
+      key: _platformViewKey,
       child: SizedBox(height: h, child: platformView),
     );
   }
@@ -987,8 +1000,32 @@ class _CNTabBarState extends State<CNTabBar> {
           ),
         );
       }
+    } else if (call.method == 'iconFrames') {
+      _reportIconFrames(call.arguments as Map?);
     }
     return null;
+  }
+
+  /// Native frames are relative to the platform view; shift them into this widget's coordinates.
+  void _reportIconFrames(Map? args) {
+    final callback = widget.onItemIconFrames;
+    final raw = args?['frames'] as List?;
+    if (callback == null || raw == null || !mounted) return;
+    final bar = context.findRenderObject() as RenderBox?;
+    final view =
+        _platformViewKey.currentContext?.findRenderObject() as RenderBox?;
+    final Offset origin = (bar != null && view != null && view.attached)
+        ? view.localToGlobal(Offset.zero, ancestor: bar)
+        : Offset.zero;
+    callback([
+      for (final f in raw.cast<List>())
+        Rect.fromLTWH(
+          (f[0] as num).toDouble(),
+          (f[1] as num).toDouble(),
+          (f[2] as num).toDouble(),
+          (f[3] as num).toDouble(),
+        ).shift(origin),
+    ]);
   }
 
   Future<void> _syncPropsToNativeIfNeeded() async {
