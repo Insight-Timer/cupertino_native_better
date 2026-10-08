@@ -93,7 +93,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
       if let v = dict["selectedIndex"] as? NSNumber { selectedIndex = v.intValue }
       if let v = dict["isDark"] as? NSNumber { isDark = v.boolValue }
       if let style = dict["style"] as? [String: Any] {
-        if let n = style["tint"] as? NSNumber { tint = Self.colorFromARGB(n.intValue) }
+        if let c = Self.tintColor(from: style) { tint = c }
         if let n = style["backgroundColor"] as? NSNumber { bg = Self.colorFromARGB(n.intValue) }
       }
       if let s = dict["split"] as? NSNumber { split = s.boolValue }
@@ -885,8 +885,7 @@ channel.setMethodCallHandler { [weak self] call, result in
         } else { result(FlutterError(code: "bad_args", message: "Missing index", details: nil)) }
       case "setStyle":
         if let args = call.arguments as? [String: Any] {
-          if let n = args["tint"] as? NSNumber {
-            let c = Self.colorFromARGB(n.intValue)
+          if let c = Self.tintColor(from: args) {
             if let bar = self.tabBar { bar.tintColor = c }
             if let left = self.tabBarLeft { left.tintColor = c }
             if let right = self.tabBarRight { right.tintColor = c }
@@ -1183,6 +1182,15 @@ channel.setMethodCallHandler { [weak self] call, result in
     }
   }
 
+
+  /// With `tintDark` the tint resolves per trait, which Liquid Glass flips over dark content.
+  private static func tintColor(from style: [String: Any]) -> UIColor? {
+    guard let n = style["tint"] as? NSNumber else { return nil }
+    let light = colorFromARGB(n.intValue)
+    guard let d = style["tintDark"] as? NSNumber else { return light }
+    let dark = colorFromARGB(d.intValue)
+    return UIColor { $0.userInterfaceStyle == .dark ? dark : light }
+  }
 
   // Use shared utility functions
   private static func colorFromARGB(_ argb: Int) -> UIColor {

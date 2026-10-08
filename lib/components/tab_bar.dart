@@ -140,7 +140,7 @@ class CNTabBar extends StatefulWidget {
 
   /// Accent/tint color.
   ///
-  /// Colors the selected item (icon + label).
+  /// Colors the selected item (icon + label). A [CupertinoDynamicColor] follows the bar's own light/dark appearance.
   final Color? tint;
 
   /// Background color for the bar.
@@ -304,6 +304,7 @@ class _CNTabBarState extends State<CNTabBar> {
   MethodChannel? _channel;
   int? _lastIndex;
   int? _lastTint;
+  int? _lastTintDark;
   int? _lastBg;
   bool? _lastIsDark;
   double? _intrinsicHeight;
@@ -343,6 +344,22 @@ class _CNTabBarState extends State<CNTabBar> {
   bool get _isDark => ThemeHelper.isDark(context);
   Color? get _effectiveTint =>
       widget.tint ?? ThemeHelper.getPrimaryColor(context);
+
+  /// A [CupertinoDynamicColor] tint goes native as a light/dark pair, so UIKit resolves it against the glass.
+  int? get _tintArgb {
+    final tint = widget.tint;
+    return resolveColorToArgb(
+      tint is CupertinoDynamicColor ? tint.color : _effectiveTint,
+      context,
+    );
+  }
+
+  int? get _tintDarkArgb {
+    final tint = widget.tint;
+    return tint is CupertinoDynamicColor
+        ? resolveColorToArgb(tint.darkColor, context)
+        : null;
+  }
 
   // Whether search mode is enabled
   bool get _hasSearch => widget.searchItem != null;
@@ -678,6 +695,11 @@ class _CNTabBarState extends State<CNTabBar> {
     final capturedDevicePixelRatio = MediaQuery.of(context).devicePixelRatio;
     final capturedIsDark = _isDark;
     final capturedStyle = encodeStyle(context, tint: _effectiveTint);
+    final capturedTintDark = _tintDarkArgb;
+    if (capturedTintDark != null) {
+      capturedStyle['tint'] = _tintArgb;
+      capturedStyle['tintDark'] = capturedTintDark;
+    }
     final capturedBackgroundColor = resolveColorToArgb(
       widget.backgroundColor,
       context,
@@ -902,7 +924,8 @@ class _CNTabBarState extends State<CNTabBar> {
     _channel = ch;
     ch.setMethodCallHandler(_onMethodCall);
     _lastIndex = widget.currentIndex;
-    _lastTint = resolveColorToArgb(_effectiveTint, context);
+    _lastTint = _tintArgb;
+    _lastTintDark = _tintDarkArgb;
     _lastBg = resolveColorToArgb(widget.backgroundColor, context);
     _lastIsDark = _isDark;
     _requestIntrinsicSize();
@@ -1029,7 +1052,8 @@ class _CNTabBarState extends State<CNTabBar> {
     if (ch == null) return;
     // Capture theme-dependent values before awaiting
     final idx = widget.currentIndex;
-    final tint = resolveColorToArgb(_effectiveTint, context);
+    final tint = _tintArgb;
+    final tintDark = _tintDarkArgb;
     final bg = resolveColorToArgb(widget.backgroundColor, context);
     final iconScale = MediaQuery.of(context).devicePixelRatio;
 
@@ -1040,9 +1064,11 @@ class _CNTabBarState extends State<CNTabBar> {
       }
 
       final style = <String, dynamic>{};
-      if (_lastTint != tint && tint != null) {
+      if ((_lastTint != tint || _lastTintDark != tintDark) && tint != null) {
         style['tint'] = tint;
+        if (tintDark != null) style['tintDark'] = tintDark;
         _lastTint = tint;
+        _lastTintDark = tintDark;
       }
       if (_lastBg != bg && bg != null) {
         style['backgroundColor'] = bg;
