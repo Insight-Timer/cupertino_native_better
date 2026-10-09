@@ -117,6 +117,7 @@ class CNTabBar extends StatefulWidget {
     this.autoHideOnPageTransition = true,
     this.showFallbackWhileLoading = true,
     this.onPillFrame,
+    this.pillTopRoom,
     this.onItemIconFrames,
   }) : assert(items.length >= 2, 'Tab bar must have at least 2 items'),
        assert(
@@ -289,6 +290,8 @@ class CNTabBar extends StatefulWidget {
   /// Flutter content with it. iOS 26+ only; not called when it can't be located.
   final ValueChanged<Rect>? onPillFrame;
 
+  /// Room above the non-split iOS 26 bar for the selection pill's morph (default 14); less may clip it.
+  final double? pillTopRoom;
   /// Called with each item's icon frame, in this widget's coordinates, whenever
   /// the native layout moves them (first layout, rotation, label changes).
   ///
@@ -774,6 +777,7 @@ class _CNTabBarState extends State<CNTabBar> {
       'rightCount': widget.rightCount,
       'splitSpacing': widget.splitSpacing,
       if (widget.onPillFrame != null) 'reportPillFrame': true,
+      if (widget.pillTopRoom != null) 'pillTopRoom': widget.pillTopRoom,
       if (widget.onItemIconFrames != null) 'reportIconFrames': true,
       'style': capturedStyle
         ..addAll({
