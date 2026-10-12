@@ -117,6 +117,10 @@ class CNTabBar extends StatefulWidget {
     this.autoHideOnPageTransition = true,
     this.showFallbackWhileLoading = true,
     this.onPillFrame,
+    this.pillTopRoom,
+    this.minimized = false,
+    this.minimizedSize,
+    this.onMinimizedTap,
     this.onItemIconFrames,
   }) : assert(items.length >= 2, 'Tab bar must have at least 2 items'),
        assert(
@@ -289,6 +293,19 @@ class CNTabBar extends StatefulWidget {
   /// Flutter content with it. iOS 26+ only; not called when it can't be located.
   final ValueChanged<Rect>? onPillFrame;
 
+  /// Room above the non-split iOS 26 bar for the selection pill's morph (default 14); less may clip it.
+  final double? pillTopRoom;
+
+  /// iOS 26, non-split bar: collapses it into a glass circle holding only the selected item,
+  /// left-aligned with the capsule and centred on its line.
+  final bool minimized;
+
+  /// Diameter of the minimized circle; defaults to the capsule's height.
+  final double? minimizedSize;
+
+  /// Tap on the minimized circle.
+  final VoidCallback? onMinimizedTap;
+
   /// Called with each item's icon frame, in this widget's coordinates, whenever
   /// the native layout moves them (first layout, rotation, label changes).
   ///
@@ -437,6 +454,12 @@ class _CNTabBarState extends State<CNTabBar> {
   @override
   void didUpdateWidget(covariant CNTabBar oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.minimized != widget.minimized) {
+      _channel?.invokeMethod('setMinimized', {
+        'minimized': widget.minimized,
+        if (widget.minimizedSize != null) 'size': widget.minimizedSize,
+      });
+    }
     // Handle controller changes
     if (oldWidget.searchController != widget.searchController) {
       oldWidget.searchController?.removeListener(_onSearchControllerChanged);
@@ -796,6 +819,9 @@ class _CNTabBarState extends State<CNTabBar> {
       'rightCount': widget.rightCount,
       'splitSpacing': widget.splitSpacing,
       if (widget.onPillFrame != null) 'reportPillFrame': true,
+      if (widget.pillTopRoom != null) 'pillTopRoom': widget.pillTopRoom,
+      if (widget.minimized) 'minimized': true,
+      if (widget.minimizedSize != null) 'minimizedSize': widget.minimizedSize,
       if (widget.onItemIconFrames != null) 'reportIconFrames': true,
       'style': capturedStyle
         ..addAll({
@@ -1019,6 +1045,8 @@ class _CNTabBarState extends State<CNTabBar> {
           ),
         );
       }
+    } else if (call.method == 'minimizedTap') {
+      widget.onMinimizedTap?.call();
     } else if (call.method == 'iconFrames') {
       _reportIconFrames(call.arguments as Map?);
     }
