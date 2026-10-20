@@ -24,6 +24,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
   private var currentActiveImageAssetData: [Data?] = []
   private var currentImageAssetFormats: [String] = []
   private var currentActiveImageAssetFormats: [String] = []
+  private var currentIconCutOuts: [CNIconCutOut?] = []
   private var iconScale: CGFloat = UIScreen.main.scale
   private var leftInsetVal: CGFloat = 0
   private var rightInsetVal: CGFloat = 0
@@ -59,6 +60,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
     var activeImageAssetData: [Data?] = []
     var imageAssetFormats: [String] = []
     var activeImageAssetFormats: [String] = []
+    var cutOuts: [CNIconCutOut?] = []
     var iconScale: CGFloat = UIScreen.main.scale
     var sizes: [NSNumber?] = []
     var colors: [NSNumber] = [] // ignored; use tintColor
@@ -92,6 +94,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
       }
       imageAssetFormats = (dict["imageAssetFormats"] as? [String]) ?? []
       activeImageAssetFormats = (dict["activeImageAssetFormats"] as? [String]) ?? []
+      cutOuts = Self.parseCutOuts(dict["iconCutOuts"])
       if let scale = dict["iconScale"] as? NSNumber {
         iconScale = CGFloat(truncating: scale)
       }
@@ -203,6 +206,10 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
         }
 
         let title = (i < labels.count && !labels[i].isEmpty) ? labels[i] : nil
+        if i < cutOuts.count, let cut = cutOuts[i] {
+          image = image.map { Self.clearing(cut, from: $0) }
+          selectedImage = selectedImage.map { Self.clearing(cut, from: $0) }
+        }
         let item = UITabBarItem(title: title, image: image, selectedImage: selectedImage)
         if i < badges.count && !badges[i].isEmpty {
           item.badgeValue = badges[i]
@@ -442,6 +449,7 @@ class CupertinoTabBarPlatformView: NSObject, FlutterPlatformView, UITabBarDelega
     self.currentActiveImageAssetData = activeImageAssetData
     self.currentImageAssetFormats = imageAssetFormats
     self.currentActiveImageAssetFormats = activeImageAssetFormats
+    self.currentIconCutOuts = cutOuts
     self.iconScale = iconScale
     self.leftInsetVal = leftInset
     self.rightInsetVal = rightInset
@@ -508,6 +516,7 @@ channel.setMethodCallHandler { [weak self] call, result in
           }
           imageAssetFormats = (args["imageAssetFormats"] as? [String]) ?? []
           activeImageAssetFormats = (args["activeImageAssetFormats"] as? [String]) ?? []
+          let cutOuts = Self.parseCutOuts(args["iconCutOuts"])
           if let scale = args["iconScale"] as? NSNumber {
             self.iconScale = CGFloat(truncating: scale)
           }
@@ -524,6 +533,7 @@ channel.setMethodCallHandler { [weak self] call, result in
           self.currentActiveImageAssetData = activeImageAssetData
           self.currentImageAssetFormats = imageAssetFormats
           self.currentActiveImageAssetFormats = activeImageAssetFormats
+          self.currentIconCutOuts = cutOuts
           // Store icon sizes for dynamic height calculation
           self.currentIconSizes = sizes.compactMap { $0?.doubleValue }.map { CGFloat($0) }
           func buildItems(_ range: Range<Int>) -> [UITabBarItem] {
@@ -573,6 +583,10 @@ channel.setMethodCallHandler { [weak self] call, result in
               }
 
               let title = (i < labels.count && !labels[i].isEmpty) ? labels[i] : nil
+              if i < cutOuts.count, let cut = cutOuts[i] {
+                image = image.map { Self.clearing(cut, from: $0) }
+                selectedImage = selectedImage.map { Self.clearing(cut, from: $0) }
+              }
               let item = UITabBarItem(title: title, image: image, selectedImage: selectedImage)
               if i < badges.count && !badges[i].isEmpty {
                 item.badgeValue = badges[i]
@@ -633,6 +647,7 @@ channel.setMethodCallHandler { [weak self] call, result in
           let activeImageAssetData = self.currentActiveImageAssetData
           let imageAssetFormats = self.currentImageAssetFormats
           let activeImageAssetFormats = self.currentActiveImageAssetFormats
+          let cutOuts = self.currentIconCutOuts
           let appearance: UITabBarAppearance? = {
             if #available(iOS 13.0, *) { return self.makeAppearance() }
             return nil
@@ -685,6 +700,10 @@ channel.setMethodCallHandler { [weak self] call, result in
               }
 
               let title = (i < labels.count && !labels[i].isEmpty) ? labels[i] : nil
+              if i < cutOuts.count, let cut = cutOuts[i] {
+                image = image.map { Self.clearing(cut, from: $0) }
+                selectedImage = selectedImage.map { Self.clearing(cut, from: $0) }
+              }
               let item = UITabBarItem(title: title, image: image, selectedImage: selectedImage)
               if i < badges.count && !badges[i].isEmpty {
                 item.badgeValue = badges[i]
@@ -1307,6 +1326,29 @@ channel.setMethodCallHandler { [weak self] call, result in
     return ImageUtils.createImageFromData(data, format: format, size: size, scale: scale)
   }
 
+  // MARK: - Icon cut-outs
+
+  private static func parseCutOuts(_ value: Any?) -> [CNIconCutOut?] {
+    return ((value as? [Any]) ?? []).map { entry in
+      guard let n = entry as? [NSNumber], n.count == 3 else { return nil }
+      return CNIconCutOut(center: CGPoint(x: n[0].doubleValue, y: n[1].doubleValue), radius: CGFloat(n[2].doubleValue))
+    }
+  }
+
+  /// Returns `image` with a transparent circle, so whatever sits behind the bar shows through it.
+  private static func clearing(_ cut: CNIconCutOut, from image: UIImage) -> UIImage {
+    let format = UIGraphicsImageRendererFormat.preferred()
+    format.scale = image.scale
+    format.opaque = false
+    let cleared = UIGraphicsImageRenderer(size: image.size, format: format).image { ctx in
+      image.draw(at: .zero)
+      ctx.cgContext.setBlendMode(.clear)
+      ctx.cgContext.fillEllipse(in: CGRect(
+        x: cut.center.x - cut.radius, y: cut.center.y - cut.radius, width: cut.radius * 2, height: cut.radius * 2))
+    }
+    return cleared.withRenderingMode(image.renderingMode)
+  }
+
 }
 
 /// Tab bar that reports where UIKit put its iOS 26 Liquid Glass pill, in its superview's coordinates, when it moves.
@@ -1332,6 +1374,12 @@ private final class CNPillReportingTabBar: UITabBar {
     let center = convert(platter.center, to: target)
     return CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
   }
+}
+
+/// A circle cleared from a tab icon, in points from the icon's top-left.
+struct CNIconCutOut {
+  let center: CGPoint
+  let radius: CGFloat
 }
 
 /// Container that tells the tab bar view when UIKit lays it out.

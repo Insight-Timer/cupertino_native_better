@@ -409,6 +409,22 @@ void main() {
     });
   });
 
+  group('CNIconCutOut', () {
+    test('equal when centre and radius match', () {
+      const a = CNIconCutOut(center: Offset(20, 6), radius: 6);
+      const b = CNIconCutOut(center: Offset(20, 6), radius: 6);
+      const c = CNIconCutOut(center: Offset(20, 6), radius: 5);
+
+      expect(a, b);
+      expect(a.hashCode, b.hashCode);
+      expect(a, isNot(c));
+    });
+
+    test('is optional on CNTabBarItem', () {
+      expect(const CNTabBarItem(label: 'Home').iconCutOut, isNull);
+    });
+  });
+
   group('CNTabBarSearchItem', () {
     test('creates search item with defaults', () {
       const item = CNTabBarSearchItem();
@@ -780,9 +796,7 @@ void main() {
 
     Widget hostTabBar(CNTabBar tabBar) {
       return CupertinoApp(
-        home: CupertinoPageScaffold(
-          child: SafeArea(child: tabBar),
-        ),
+        home: CupertinoPageScaffold(child: SafeArea(child: tabBar)),
       );
     }
 

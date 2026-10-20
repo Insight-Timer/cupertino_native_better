@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Added: `CNTabBarItem.iconCutOut`
+
+A dot or badge drawn over a tab (for example at a frame from `onItemIconFrames`) sits on top of the icon, and the usual workaround, a ring in the bar's colour, doesn't work on the iOS 26 Liquid Glass bar, whose colour changes with the content behind it.
+
+`iconCutOut: CNIconCutOut(center: ..., radius: ...)` clears a circle from the item's icon and selected icon, in points from the icon's top-left, so the backdrop shows through around the dot. Changing or removing it updates the item in place. iOS 26+ native bar only; the Flutter fallback ignores it. Items without it are unchanged.
+
 ### Added: `CNTabBar.showFallbackWhileLoading`
 
 While the native bar is being prepared on iOS 26+ (rendering the item icons, plus a short delay after a hot restart in debug builds), `CNTabBar` shows the Flutter fallback bar so the space isn't blank (Issue #5). For apps whose bar looks nothing like that fallback, for example ones using `imageAsset` icons, which the fallback draws as placeholders, this reads as a different bar flashing in before the Liquid Glass one.

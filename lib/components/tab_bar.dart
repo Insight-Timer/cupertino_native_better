@@ -24,6 +24,7 @@ class CNTabBarItem {
     this.activeCustomIcon,
     this.imageAsset,
     this.activeImageAsset,
+    this.iconCutOut,
   });
 
   /// Optional tab item label.
@@ -66,7 +67,39 @@ class CNTabBarItem {
   /// Optional image asset for selected state.
   /// If not provided, [imageAsset] is used for both states.
   final CNImageAsset? activeImageAsset;
+
+  /// Optional circle cleared from this item's icons, in both states.
+  ///
+  /// Lets Flutter content drawn over the bar, such as an unread dot, read as
+  /// cut out of the icon: whatever is behind the bar shows through the hole.
+  /// iOS 26+ native bar only; the Flutter fallback ignores it.
+  final CNIconCutOut? iconCutOut;
 }
+
+/// A transparent circle cut out of a tab bar item's icon.
+@immutable
+class CNIconCutOut {
+  /// Creates a cut-out of [radius] centred at [center].
+  const CNIconCutOut({required this.center, required this.radius});
+
+  /// Centre in points from the icon's top-left corner.
+  final Offset center;
+
+  /// Radius in points.
+  final double radius;
+
+  List<double> _toParams() => [center.dx, center.dy, radius];
+
+  @override
+  bool operator ==(Object other) =>
+      other is CNIconCutOut && other.center == center && other.radius == radius;
+
+  @override
+  int get hashCode => Object.hash(center, radius);
+}
+
+List<List<double>> _iconCutOutParams(List<CNTabBarItem> items) =>
+    items.map((e) => e.iconCutOut?._toParams() ?? const <double>[]).toList();
 
 /// A Cupertino-native tab bar. Uses native UITabBar/NSTabView style visuals.
 ///
@@ -329,6 +362,7 @@ class _CNTabBarState extends State<CNTabBar> {
   List<String>? _lastLabels;
   List<String>? _lastSymbols;
   List<String>? _lastActiveSymbols;
+  String? _lastIconCutOuts;
   List<String>? _lastBadges;
   bool? _lastSplit;
   int? _lastRightCount;
@@ -807,6 +841,7 @@ class _CNTabBarState extends State<CNTabBar> {
       'activeImageAssetData': activeImageAssetData,
       'imageAssetFormats': imageAssetFormats,
       'activeImageAssetFormats': activeImageAssetFormats,
+      'iconCutOuts': _iconCutOutParams(widget.items),
       'iconScale': capturedDevicePixelRatio,
       'sfSymbolSizes': sizes,
       'sfSymbolColors': colors,
@@ -1120,11 +1155,14 @@ class _CNTabBarState extends State<CNTabBar> {
       final symbolsChanged = _lastSymbols?.join('|') != symbols.join('|');
       final activeSymbolsChanged =
           _lastActiveSymbols?.join('|') != activeSymbols.join('|');
+      final iconCutOuts = _iconCutOutParams(widget.items);
+      final iconCutOutsChanged = _lastIconCutOuts != iconCutOuts.toString();
 
       if (badgesChanged &&
           !labelsChanged &&
           !symbolsChanged &&
-          !activeSymbolsChanged) {
+          !activeSymbolsChanged &&
+          !iconCutOutsChanged) {
         // Only badges changed - use lightweight update
         await ch.invokeMethod('setBadges', {'badges': badges});
         _lastBadges = badges;
@@ -1138,6 +1176,7 @@ class _CNTabBarState extends State<CNTabBar> {
       if (labelsChanged ||
           symbolsChanged ||
           activeSymbolsChanged ||
+          iconCutOutsChanged ||
           badgesChanged ||
           iconSizeChanged) {
         // Re-render custom icons if items changed
@@ -1200,6 +1239,7 @@ class _CNTabBarState extends State<CNTabBar> {
           'activeImageAssetData': activeImageAssetData,
           'imageAssetFormats': imageAssetFormats,
           'activeImageAssetFormats': activeImageAssetFormats,
+          'iconCutOuts': iconCutOuts,
           'iconScale': iconScale,
           'selectedIndex': widget.currentIndex,
           'sfSymbolSizes': sizes,
@@ -1207,6 +1247,7 @@ class _CNTabBarState extends State<CNTabBar> {
         _lastLabels = labels;
         _lastSymbols = symbols;
         _lastActiveSymbols = activeSymbols;
+        _lastIconCutOuts = iconCutOuts.toString();
         _lastBadges = badges;
         _lastIconSize = widget.iconSize;
         // Re-measure width in case content changed
@@ -1275,6 +1316,7 @@ class _CNTabBarState extends State<CNTabBar> {
         .map((e) => e.activeIcon?.name ?? e.icon?.name ?? '')
         .toList();
     _lastBadges = widget.items.map((e) => e.badge ?? '').toList();
+    _lastIconCutOuts = _iconCutOutParams(widget.items).toString();
     // Note: Custom icon bytes are cached in _syncPropsToNativeIfNeeded when rendered
   }
 
