@@ -663,6 +663,8 @@ class _CNTabBarState extends State<CNTabBar> {
     if (_creationParams!['selectedIndex'] != widget.currentIndex) {
       _creationParams!['selectedIndex'] = widget.currentIndex;
     }
+    // Same for icon cut-outs, which apps toggle at runtime.
+    _creationParams!['iconCutOuts'] = _iconCutOutParams(widget.items);
 
     final platformView = _buildNativeTabBarPlatformView(_creationParams!);
 
@@ -996,6 +998,10 @@ class _CNTabBarState extends State<CNTabBar> {
     _lastSplitSpacing = widget.splitSpacing;
     _lastLabelFontFamily = widget.labelFontFamily;
     _lastLabelFontSize = widget.labelFontSize;
+    // A cut-out that changed while the view was being created hasn't reached it yet.
+    if (_lastIconCutOuts != _iconCutOutParams(widget.items).toString()) {
+      _syncPropsToNativeIfNeeded();
+    }
 
     // Force refresh for label rendering (Issue #6: sporadic missing
     // labels with 5 items). The Swift-side `refresh` cycles
@@ -1316,7 +1322,9 @@ class _CNTabBarState extends State<CNTabBar> {
         .map((e) => e.activeIcon?.name ?? e.icon?.name ?? '')
         .toList();
     _lastBadges = widget.items.map((e) => e.badge ?? '').toList();
-    _lastIconCutOuts = _iconCutOutParams(widget.items).toString();
+    _lastIconCutOuts =
+        (_creationParams?['iconCutOuts'] ?? _iconCutOutParams(widget.items))
+            .toString();
     // Note: Custom icon bytes are cached in _syncPropsToNativeIfNeeded when rendered
   }
 
