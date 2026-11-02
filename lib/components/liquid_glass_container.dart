@@ -107,12 +107,18 @@ class _LiquidGlassContainerState extends State<LiquidGlassContainer>
 
   void _onSecondaryRouteAnimChanged() => _pushContainmentIfNeeded();
 
+  @override
+  void didChangeModalAbove() => _pushContainmentIfNeeded();
+
   void _pushContainmentIfNeeded() {
     final anim = _secondaryRouteAnim;
     final animating =
         anim?.status == AnimationStatus.forward ||
         anim?.status == AnimationStatus.reverse;
-    final active = animating;
+    // A popup never drives a PageRoute's secondaryAnimation, so a container
+    // kept under a sheet (autoHideOnModal: false) also needs the clip while
+    // the modal is up, or its halo leaks past the sheet's overlay.
+    final active = animating || isAnyModalAbove;
     final ch = _channel;
     if (ch == null) return;
     ch.invokeMethod('setTransitioning', {'active': active}).catchError((_) {});

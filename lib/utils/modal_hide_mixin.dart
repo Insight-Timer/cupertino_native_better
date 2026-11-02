@@ -129,6 +129,7 @@ mixin ModalHideMixin<T extends StatefulWidget> on State<T> {
           _modalUp = newHide;
         });
       }
+      if (aboveChanged) didChangeModalAbove();
       // TAPPING-FIX REVERT: the native setInteractive channel call and
       // its caller _applyNativeInteractive are intentionally removed
       // here. We want to isolate whether the visible blink/rebuild
@@ -136,6 +137,11 @@ mixin ModalHideMixin<T extends StatefulWidget> on State<T> {
       // wrap or by the position-aware hide path itself.
     });
   }
+
+  /// Called after [isAnyModalAbove] flips, e.g. to clip a kept PlatformView's
+  /// halo while a modal covers it.
+  @protected
+  void didChangeModalAbove() {}
 
   /// Returns a same-sized [SizedBox] placeholder when [isHiddenForModal] is
   /// true, else null. Use as an early return at the top of `build()` so the
