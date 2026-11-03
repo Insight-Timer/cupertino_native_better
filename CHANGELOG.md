@@ -16,6 +16,10 @@ Set `showFallbackWhileLoading: false` to keep the bar's space empty until the na
 
 UIKit sizes and insets the iOS 26 Liquid Glass capsule per device, so Flutter content that lines up with it (a floating player above the bar, for example) can't rely on fixed numbers. `onPillFrame` reports the capsule's frame, in the widget's coordinates, whenever the native layout moves it. iOS 26+ only; it isn't called when the capsule can't be located.
 
+### Fixed: `LiquidGlassContainer` halo through a modal
+
+With `autoHideOnModal: false`, a container kept under a sheet leaked its Liquid Glass halo past its bounds, showing as a light line along its edge over the sheet. The halo clip ran only while the host route's `secondaryAnimation` animated, which a popup never drives. It now also stays on while any modal is above the container.
+
 ## 1.6.0
 
 > Minor rather than patch because `CNGlassEffect` gains a value (`clear`). That is source-breaking for anyone with an exhaustive `switch` over the enum. 1.5.5 was tagged during development and never published; everything it contained is here.
